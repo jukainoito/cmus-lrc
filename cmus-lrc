@@ -8,7 +8,7 @@
 # @Description:
 import re
 import os
-import json
+import json, string
 import time
 import curses
 import logging
@@ -39,7 +39,7 @@ def parse(path):
     except:
         return {}
 
-    re_lyric = re.compile(r'\[\d\d:\d\d.\d\d\]')
+    re_lyric = re.compile(r'\[\d\d:\d\d.\d{2,3}\]')
     lyrics = parse_lines(lines, re_lyric)
     if len(lyrics) == 0:
         re_lyric = re.compile(r'\[\d\d:\d\d]')
@@ -98,9 +98,35 @@ def _kugo_get_song_info(info):
     jsn = {}
     with urlopen(url) as f:
         text = f.read().decode()
+        logging.info(text)
         jsn = json.loads(text)
     return jsn
 
+def _163_get_songs(song):
+    api_pre = 'https://api.imjad.cn/cloudmusic/?type=search&search_type=1&s='
+    url = api_pre + quote(song, 'utf-8')
+    logging.info(url)
+    jsn = []
+    with urlopen(url) as f:
+        text = f.read()
+        if bytes == type(text):
+            text = text.decode()
+        jsn = json.loads(text)
+        if jsn['code'] == 200:
+            jsn = jsn['result']['songs']
+        else:
+            jsn = []
+    return jsn
+
+def _163_get_song_lyric_info(id):
+    api_pre = 'https://api.imjad.cn/cloudmusic/?type=lyric&id='
+    url = api_pre + str(id)
+    jsn = {}
+    with urlopen(url) as f:
+        text = f.read().decode()
+        logging.info(text)
+        jsn = json.loads(text)
+    return jsn
 
 class Player:
     def __init__(self, mode='default'):
@@ -126,19 +152,39 @@ class Player:
                 return {}
 
     def _download_lrc(self, song):
-        if False:
-            ok = self._download_lrc_gecimi(song, url)
-            if not ok:
-                url = base + quote(song['title'])
-                ok = self._download_lrc_gecimi(song, url)
-        else:
-            ok = self._download_lrc_kugo(song)
+        # if False:
+            # ok = self._download_lrc_gecimi(song)
+            # if not ok:
+                # url = base + quote(song['title'])
+                # ok = self._download_lrc_gecimi(song)
+        # else:
+            # ok = self._download_lrc_kugo(song)
+        ok = self._download_lrc_163(song)
         return ok
 
+    def _download_lrc_163(self, song):
+        songlist = _163_get_songs(song['title'])
+        lyrics = ''
+        logging.info(json.dumps(songlist))
+        for tune in songlist:
+            if tune['name'].find(song['title']) > -1:
+                lyrics = _163_get_song_lyric_info(tune['id'])
+                logging.info(json.dumps(lyrics))
+                if 'lrc' in lyrics.keys() and lyrics['lrc']['lyric'] is not None:
+                    lyric_name = song['artist'] + ' - ' + song['title'] + '.lrc'
+                    logging.info(CMUS_LRC_HOME + lyric_name)
+                    lyrics_txt = ''
+                    for l in lyrics['lrc']['lyric']:
+                        lyrics_txt = lyrics_txt + l
+                    with open(CMUS_LRC_HOME + lyric_name, 'w') as f:
+                        f.write(lyrics_txt)
+                    return True
+        return False
 
     def _download_lrc_kugo(self, song):
         songlist = _kugo_get_songs(song['title'])
         lyrics = ''
+        logging.info("{}".format(json.dumps(songlist)))
         for tune in songlist:
             if tune['SingerName'] == song['artist']:
                 info = _kugo_get_song_info(tune)
@@ -218,6 +264,7 @@ class Player:
         text = os.popen('cmus-remote -Q').read()
         position, title, artist, album = self._parse_cmus(text)
         data = {'position': position, 'title': title, 'artist': artist, 'album': album}
+        logging.info(data)
         return data
 
 
