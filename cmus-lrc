@@ -10,19 +10,34 @@ import asyncio
 import re
 import os
 import json
-import time
 import curses
 import logging
 from urllib.request import urlopen
 from urllib.parse import quote
-from curses.textpad import Textbox
-from threading import Thread, Event
-DEBUG = False
+from threading import Event
+
+
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument("-debug", "--debug", help="debug", action="store_true")
+parser.add_argument("-log", "--log", help="logfile save path", action="store")
+parser.add_argument("--lyrics-dir", help="lyrics dir", action="store")
+args = parser.parse_args()
+
+
+
+DEBUG = args.debug
 if DEBUG:
     from mem_top import mem_top
 
 CMUS_LRC_HOME = os.path.expanduser('~') + '/.cmus/lyrics/'
 LOGFILE = os.path.expanduser('~') + '/.cmus/cmus-lrc.log'
+if args.log is not None:
+    LOGFILE = os.path.normpath(os.path.abspath(args.log))
+if args.lyrics_dir is not None:
+    CMUS_LRC_HOME = os.path.normpath(os.path.abspath(args.lyrics_dir))
+
 
 def configure_logging():
     f = logging.FileHandler(LOGFILE, 'w')
@@ -104,6 +119,7 @@ class Player:
     def __init__(self, mode='default'):
         self.lyrics = None
         self.song = {}
+        self.data = None
         self.mode = mode
         self.current = 0
         self.win = None
@@ -115,12 +131,13 @@ class Player:
         if not os.path.isdir(CMUS_LRC_HOME):
             os.makedirs(CMUS_LRC_HOME)
         lyric_name = song['artist'] + ' - ' + song['title'] + '.lrc'
-        if os.path.isfile(CMUS_LRC_HOME + lyric_name):
-            return parse(CMUS_LRC_HOME + lyric_name)
+        lyric_file_path = os.path.join(CMUS_LRC_HOME, lyric_name)
+        if os.path.isfile(lyric_file_path):
+            return parse(lyric_file_path)
         else:
             if download:
                 if self._download_lrc(song):
-                    return parse(CMUS_LRC_HOME + lyric_name)
+                    return parse(lyric_file_path)
             return {}
 
     def _download_lrc(self, song):
@@ -137,19 +154,20 @@ class Player:
                 logging.info(json.dumps(lyrics))
                 if 'lrc' in lyrics.keys() and lyrics['lrc']['lyric'] is not None:
                     lyric_name = song['artist'] + ' - ' + song['title'] + '.lrc'
-                    logging.info(CMUS_LRC_HOME + lyric_name)
+                    lyric_file_path = os.path.join(CMUS_LRC_HOME, lyric_name)
                     lyrics_txt = ''
                     for l in lyrics['lrc']['lyric']:
                         lyrics_txt = lyrics_txt + l
-                    with open(CMUS_LRC_HOME + lyric_name, 'w') as f:
+                    with open(lyric_file_path, 'w') as f:
                         f.write(lyrics_txt)
                     return True
         return False
 
-    async def _get_lyrics(self):
+    @asyncio.coroutine
+    def _get_lyrics(self):
         data = self.data
         if data['title']:
-            logging.info('playing %s' % data['title'])
+            #logging.info('playing %s' % data['title'])
             if DEBUG:
                 logging.debug(mem_top())
             download = False
@@ -209,18 +227,31 @@ class Player:
         return position, title, artist, album
 
 
-    def run(self, screen):
+    def run(self, stdscr):
         # 使用系统默认的配色
         curses.use_default_colors()
         # 指定当前行的配色。-1: 代表无背景色
-        curses.init_pair(6, curses.COLOR_CYAN, -1) 
+        curses.init_pair(6, curses.COLOR_CYAN, -1)
         # 获取当前 window 的最大宽高（以显示字节为单位）
-        self.win = screen
+        self.win_maxyx = stdscr.getmaxyx()
+        self.stdscr = stdscr
+        # set cursor invisible
+        curses.curs_set(0)
+        curses.noecho()
+        self.win = curses.newpad(self.win_maxyx[0], 16383)
+        #self.win = stdscr
         self.scroll(self.win, 0) # 从0行呈现
 
         # 使用 event.wait() 来产生 time tick 任务，每 0.5s 循环一次
-        while not self.notifyevent.wait(0.5):
-            self.data = self._get_cmus_info()
+        while not self.notifyevent.wait(0.3):
+            self.win_maxyx = stdscr.getmaxyx()
+            #curses.resizeterm(self.win_maxyx[0], 16383)
+            #self.win = curses.newpad(self.win_maxyx[0], 16383)
+            self.win.resize(self.win_maxyx[0], 16383)
+            data = self._get_cmus_info()
+            #if self.data is not None and data['position'] == self.data['position']:
+            #    continue
+            self.data = data
             cur = self.query_curline()
             if (-1 == cur):
                 self.showinfo({'title': self.data['title'], 'artist': self.data['artist']})
@@ -240,7 +271,7 @@ class Player:
             artist = 'Unknown artist'
         wt = (len(title) + len(title.encode()))//2
         wa = (len(artist) + len(artist.encode()))//2
-        h, w = self.win.getmaxyx()
+        h, w = self.win_maxyx
         xt = (w-wt)//2 if w-wt>=0 else 0
         xa = (w-wa)//2 if w-wa>=0 else 0
 
@@ -248,7 +279,7 @@ class Player:
         self.win.clear()
         self.win.addstr(h//2-1, xt, title)
         self.win.addstr(h//2, xa, artist)
-        self.win.refresh()
+        self.win.refresh(0, 0, 0, 0, h-1, w-1)
         #except Exception as e:
         #    pass
 
@@ -258,8 +289,8 @@ class Player:
         '''
         @param cur: 当前播放的行数，相对于 self.lyrics
         '''
-        if cur == self.current and cur != 0:
-            return
+        #if cur == self.current and cur != 0:
+        #    return
         if not self.lyrics:
             return
 
@@ -269,30 +300,32 @@ class Player:
             return
 
         win.clear()
-        h, w = win.getmaxyx()
+        h, w = self.win_maxyx
         begin = self.current - int(h * 0.4)
 
-        try:
-            for i in range(0, h):
-                if i + begin < 0 or i + begin > len(self.lyrics) - 1:
-                    win.addstr(i, 0, '')
-                else:
-                    k, v = self.lyrics[i + begin]
-                    v = v.strip()
-                    lw = (len(v) + len(v.encode()))//2
-                    x = (w-lw)//2 if w-lw>=0 else 0
-                    ls = len(v) if len(v) <= w else w
-                    if i + begin == self.current:
-                        win.addstr(i, x, v[0:ls], curses.color_pair(6) | curses.A_BOLD)
-                    else:
-                        win.addstr(i, x, v[0:ls])
-            win.refresh()
-        except Exception as e:
-            win.clear()
-            x = (w-len(str(e)))//2 if w-len(str(e)) >= 0 else 0
-            l = len(str(e)) if len(str(e)) <= w else w
-            win.addstr(h//2, x, str(e)[0:l-1])
-            win.refresh()
+        # try:
+        for i in range(0, h):
+            if i + begin < 0 or i + begin > len(self.lyrics) - 1:
+                win.addstr(i, 0, '')
+            else:
+                k, v = self.lyrics[i + begin]
+                v = v.strip()
+                lw = (len(v) + len(v.encode()))//2
+                x = (w-lw)//2 if w-lw>=0 else 0
+                ls = len(v) if len(v) <= w else w
+                attr = 0
+                if i + begin == self.current:
+                    attr = curses.color_pair(6) | curses.A_BOLD
+                win.addnstr(i, x, v[0:ls], w-1, attr)
+                win.clrtoeol()
+                win.clearok(1)
+        win.refresh(0, 0, 0, 0, h-1, w-1)
+        # except Exception as e:
+            # win.clear()
+            # x = (w-len(str(e)))//2 if w-len(str(e)) >= 0 else 0
+            # l = len(str(e)) if len(str(e)) <= w else w
+            # win.addstr(h//2, x, str(e)[0:l-1])
+            # win.refresh()
 
 
 if __name__ == '__main__':
