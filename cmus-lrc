@@ -174,7 +174,7 @@ class Player:
                     arVal = arVal + difflib.SequenceMatcher(None, ar['name'], songInfo['artist']).quick_ratio()
 
             tempMatchVal = titleVal + dtVal + arVal
-            
+
             if tempMatchVal > matchVal:
                 matchSong = song
                 matchVal = tempMatchVal
