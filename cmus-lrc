@@ -6,9 +6,10 @@
 # @Create Date: 2017-08-03 10:08:10
 # @Last Modified: 2017-08-03 20:08:05
 # @Description:
+import asyncio
 import re
 import os
-import json, string
+import json
 import time
 import curses
 import logging
@@ -72,35 +73,6 @@ def _get_time(match):
     return minutes * 60 + seconds + miliseconds / 100.0
 
 
-def _kugo_get_songs(song):
-    callback = 'jQuery191009360820465904207_1502077916336'
-    api_pre = 'http://songsearch.kugou.com/song_search_v2?callback=' + callback + '&keyword='
-    api_pram = '&page=1&pagesize=30&userid=-1&clientver=&platform=WebFilter&tag=em&filter=2&iscorrection=1&privilege_filter=0&_='
-    timestamp = str(int(time.time() * 1000))
-    url = api_pre + quote(song) + api_pram + timestamp
-    jsn = []
-    with urlopen(url) as f:
-        text = f.read()
-        if bytes == type(text):
-            text = text.decode()
-        text = text[len(callback)+1 : len(text)-2]
-        jsn = json.loads(text)
-        jsn = jsn['data']['lists']
-    return jsn
-
-
-def _kugo_get_song_info(info):
-    api_pre = 'http://www.kugou.com/yy/index.php?r=play/getdata'
-    hashid = info['FileHash']
-    album_id = info['AlbumID']
-    timestamp = str(int(time.time() * 1000))
-    url = api_pre + '&hash=' + hashid + '&album_id=' + album_id + '&_=' + timestamp
-    jsn = {}
-    with urlopen(url) as f:
-        text = f.read().decode()
-        logging.info(text)
-        jsn = json.loads(text)
-    return jsn
 
 def _163_get_songs(song):
     api_pre = 'https://api.imjad.cn/cloudmusic/?type=search&search_type=1&s='
@@ -139,26 +111,19 @@ class Player:
         curses.wrapper(self.run)
 
 
-    def query_lrc(self, song):
+    def query_lrc(self, song, download):
         if not os.path.isdir(CMUS_LRC_HOME):
             os.makedirs(CMUS_LRC_HOME)
         lyric_name = song['artist'] + ' - ' + song['title'] + '.lrc'
         if os.path.isfile(CMUS_LRC_HOME + lyric_name):
             return parse(CMUS_LRC_HOME + lyric_name)
         else:
-            if self._download_lrc(song):
-                return parse(CMUS_LRC_HOME + lyric_name)
-            else:
-                return {}
+            if download:
+                if self._download_lrc(song):
+                    return parse(CMUS_LRC_HOME + lyric_name)
+            return {}
 
     def _download_lrc(self, song):
-        # if False:
-            # ok = self._download_lrc_gecimi(song)
-            # if not ok:
-                # url = base + quote(song['title'])
-                # ok = self._download_lrc_gecimi(song)
-        # else:
-            # ok = self._download_lrc_kugo(song)
         ok = self._download_lrc_163(song)
         return ok
 
@@ -181,67 +146,22 @@ class Player:
                     return True
         return False
 
-    def _download_lrc_kugo(self, song):
-        songlist = _kugo_get_songs(song['title'])
-        lyrics = ''
-        logging.info("{}".format(json.dumps(songlist)))
-        for tune in songlist:
-            if tune['SingerName'] == song['artist']:
-                info = _kugo_get_song_info(tune)
-                if len(info) > 0:
-                    lyrics = info['data']['lyrics']
-                break
-        if len(lyrics) > 0:
-            lyric_name = song['artist'] + ' - ' + song['title'] + '.lrc'
-            try:
-                with open(CMUS_LRC_HOME + lyric_name, 'w') as f:
-                    f.write(lyrics)
-            except:
-                pass
-            return True
-        return False
-
-
-    def _download_lrc_gecimi(self, song):
-        base = 'http://gecimi.com/api/lyric/'
-        url = base + quote(song['title']) + '/'
-        url += quote(song['artist'])
-        try:
-            with urlopen(url) as f:
-                text = f.read()
-                if bytes == type(text):
-                    lyric_json = json.loads(text.decode())
-                elif str == type(text):
-                    lyric_json = json.loads(text)
-
-            if not lyric_json:
-                return False
-        except Exception as e:
-            return False
-
-        if 0 == lyric_json['code'] and lyric_json['count'] > 0:
-            surl = lyric_json['result'][0]['lrc']
-            with urlopen(surl) as f:
-                text = f.read()
-
-            lyric_name = song['artist'] + ' - ' + song['title'] + '.lrc'
-
-            with open(CMUS_LRC_HOME + lyric_name, 'w') as f:
-                f.write(text.decode('utf-8'))
-            return True
-        else:
-            return False
-
+    async def _get_lyrics(self):
+        data = self.data
+        if data['title']:
+            logging.info('playing %s' % data['title'])
+            if DEBUG:
+                logging.debug(mem_top())
+            download = False
+            if 'title' not in self.song.keys() or self.song['title'] != self.data['title']:
+                self.song = {'title': self.data['title'], 'artist': self.data['artist']}
+                download = True
+            self.lyrics = self.query_lrc(self.song, download)
 
     def query_curline(self):
-        data = self._get_cmus_info()
+        data = self.data
         if not self._compare_song(data):
-            if data['title']:
-                logging.info('playing %s' % data['title'])
-                if DEBUG:
-                    logging.debug(mem_top())
-                self.song = {'title': data['title'], 'artist': data['artist']}
-                self.lyrics = self.query_lrc(self.song)
+            self.lyrics = None
 
         if not self.lyrics or len(self.lyrics) == 0:
             return -1
@@ -264,7 +184,6 @@ class Player:
         text = os.popen('cmus-remote -Q').read()
         position, title, artist, album = self._parse_cmus(text)
         data = {'position': position, 'title': title, 'artist': artist, 'album': album}
-        logging.info(data)
         return data
 
 
@@ -301,20 +220,22 @@ class Player:
 
         # 使用 event.wait() 来产生 time tick 任务，每 0.5s 循环一次
         while not self.notifyevent.wait(0.5):
+            self.data = self._get_cmus_info()
             cur = self.query_curline()
             if (-1 == cur):
-                self.showinfo()
+                self.showinfo({'title': self.data['title'], 'artist': self.data['artist']})
+                asyncio.run(self._get_lyrics())
             else:
                 self.scroll(self.win, cur)
 
 
-    def showinfo(self):
-        if 'title' in self.song:
-            title = self.song['title'].strip()
+    def showinfo(self, song):
+        if 'title' in song:
+            title = song['title'].strip()
         else:
             title = 'Unknown song'
-        if 'artist' in self.song:
-            artist = self.song['artist'].strip()
+        if 'artist' in song:
+            artist = song['artist'].strip()
         else:
             artist = 'Unknown artist'
         wt = (len(title) + len(title.encode()))//2
@@ -323,13 +244,13 @@ class Player:
         xt = (w-wt)//2 if w-wt>=0 else 0
         xa = (w-wa)//2 if w-wa>=0 else 0
 
-        try:
-            self.win.clear()
-            self.win.addstr(h//2-1, xt, title)
-            self.win.addstr(h//2, xa, artist)
-            self.win.refresh()
-        except Exception as e:
-            pass
+        #try:
+        self.win.clear()
+        self.win.addstr(h//2-1, xt, title)
+        self.win.addstr(h//2, xa, artist)
+        self.win.refresh()
+        #except Exception as e:
+        #    pass
 
 
 
