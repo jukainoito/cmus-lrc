@@ -6,26 +6,35 @@
 # @Create Date: 2017-08-03 10:08:10
 # @Last Modified: 2017-08-03 20:08:05
 # @Description:
-import asyncio
-import re
+
 import os
-import json
-import curses
+from abc import ABCMeta, abstractmethod
+
 import logging
+
 from threading import Event
+import asyncio
 
 import requests
 from urllib.parse import quote
+
 import difflib
+import re
+import json
+from lxml import etree
 
 import math
+import hashlib
+
+import curses
 
 import argparse
 
 parser = argparse.ArgumentParser()
-parser.add_argument("-debug", "--debug", help="debug", action="store_true")
-parser.add_argument("-log", "--log", help="logfile save path", action="store")
-parser.add_argument("--lyrics-dir", help="lyrics dir", action="store")
+parser.add_argument('-debug', '--debug', help='debug', action='store_true')
+parser.add_argument('-log', '--log', help='logfile save path', action='store')
+parser.add_argument('--lyrics-dir', help='lyrics dir', action='store')
+parser.add_argument('--disable-download', help='disable download', action='store')
 args = parser.parse_args()
 
 
@@ -40,6 +49,8 @@ if args.log is not None:
     LOGFILE = os.path.normpath(os.path.abspath(args.log))
 if args.lyrics_dir is not None:
     CMUS_LRC_HOME = os.path.normpath(os.path.abspath(args.lyrics_dir))
+DISABLE_DOWNLOAD = args.disable_download
+
 
 
 def configure_logging():
@@ -51,55 +62,195 @@ def configure_logging():
         logging.debug(mem_top())
 
 
-def parse(path):
-    try:
-        with open(path, 'r') as f:
-            lines = f.readlines()
-    except:
-        return {}
+class LrcParser(object):
 
-    re_lyric = re.compile(r'\[\d\d:\d\d.\d{2,3}\]')
-    lyrics = parse_lines(lines, re_lyric)
-    if len(lyrics) == 0:
-        re_lyric = re.compile(r'\[\d\d:\d\d]')
-        lyrics = parse_lines(lines, re_lyric)
+    def parse(self, path):
+        try:
+            with open(path, 'r') as f:
+                lines = f.readlines()
+        except:
+            return {}
 
-    return lyrics
+        reLyric = re.compile(r'\[\d\d:\d\d.\d{2,3}\]')
+        lyrics = self.parseLines(lines, reLyric)
+        if len(lyrics) == 0:
+            reLyric = re.compile(r'\[\d\d:\d\d]')
+            lyrics = self.parseLines(lines, reLyric)
 
+        return lyrics
 
-def parse_lines(lines, re_lyric):
-    lyrics = {}
-    for line in lines:
-        line = line.strip()
-        matchs = re.findall(re_lyric, line)
-        value = re.sub(re_lyric, '', line)
-        for match in matchs:
-            lyrics[_get_time(match)] = value
+    def parseLines(self, lines, reLyric):
+        lyrics = {}
+        for line in lines:
+            line = line.strip()
+            matchs = re.findall(reLyric, line)
+            value = re.sub(reLyric, '', line)
+            for match in matchs:
+                lyrics[self.getTime(match)] = value
 
-    return sorted(lyrics.items(), key=lambda i: i[0])
-
-
-def _get_time(match):
-    if len(match) > 7:
-        minutes = int(match[1:3])
-        seconds = int(match[4:6])
-        miliseconds = int(match[7:9])
-    else:
-        minutes = int(match[1:3])
-        seconds = int(match[4:6])
-        miliseconds = 0
-    return minutes * 60 + seconds + miliseconds / 100.0
+        return sorted(lyrics.items(), key=lambda i: i[0])
 
 
+    def getTime(self, match):
+        if len(match) > 7:
+            minutes = int(match[1:3])
+            seconds = int(match[4:6])
+            miliseconds = int(match[7:9])
+        else:
+            minutes = int(match[1:3])
+            seconds = int(match[4:6])
+            miliseconds = 0
+        return minutes * 60 + seconds + miliseconds / 100.0
 
 
-class NeteaseLrcDownloader(object):
+class CmusInfo(object):
+
+    def getInfo(self):
+        text = os.popen('cmus-remote -Q').read()
+        duration, position, title, artist, album = self.parse(text)
+        data = {'duration': duration, 'position': position, 'title': title, 'artist': artist, 'album': album}
+        return data
+
+
+    def parse(self, text):
+        position = 0
+        duration = 0
+        album = ''
+        artist = ''
+        title = ''
+
+        lines = text.split('\n')
+        for line in lines:
+            if 'position' in line:
+                position = int(line.split(' ')[1])
+            elif 'tag artist' in line:
+                artist = line.replace('tag artist ', '').replace('/', '-')
+            elif 'tag album' in line:
+                album = line.replace('tag album ', '').replace('/', '-')
+            elif 'tag title' in line:
+                title = line.replace('tag title ', '').replace('/', '-')
+            elif 'duration' in line:
+                duration = int(line.split(' ')[1])
+
+        return duration, position, title, artist, album
+
+
+
+class LrcDownloader:
+    __metaclass__ = ABCMeta
+
+    TITLE_BASE_VAL = 3
+    DURATION_BASE_VAL = 5
+    ARTIST_BASE_VAL = 1
+
+    @abstractmethod
+    def search(self, title):
+        pass
+
+    def match(self, downloaderSongList, targetPlayerSong):
+        matchSong = None
+        matchVal = 0
+        for song in downloaderSongList:
+            titleVal = difflib.SequenceMatcher(None, song['title'], targetPlayerSong['title']).quick_ratio()
+            titleVal = titleVal * self.TITLE_BASE_VAL
+
+            dtVal = math.pow((targetPlayerSong['duration']-abs((song['duration']//1000)-targetPlayerSong['duration']))/targetPlayerSong['duration'], 3) * self.DURATION_BASE_VAL
+
+            arVal = 0
+            if 'ar' in song.keys() and song['ar'] is not None:
+                for ar in song['ar']:
+                    arVal = arVal + difflib.SequenceMatcher(None, ar['name'], targetPlayerSong['artist']).quick_ratio() * self.ARTIST_BASE_VAL
+
+            tempMatchVal = titleVal + dtVal + arVal
+
+            if tempMatchVal > matchVal:
+                matchSong = song
+                matchVal = tempMatchVal
+        return {
+            'song': matchSong,
+            'value': matchVal
+        }
+
+    @abstractmethod
+    def getLyric(self, downloaderSong):
+        pass
+
+
+class XiamiLrcDownloader(LrcDownloader):
+
+    SEARCH_URL = 'https://www.xiami.com/list?scene=search&type=song&query='
+    #LYRIC_URL = 'https://www.xiami.com/api/lyric/getSongLyrics?_q='
+    LYRIC_URL = 'https://www.xiami.com/api/song/initialize?_q='
+
+    def genSPram(self, xmSgTk, apiPath, queryStr):
+        data = '{}_xmMain_{}_{}'.format(xmSgTk.split('_')[0], apiPath, queryStr)
+        return hashlib.md5(data.encode('utf8')).hexdigest()
+
+    def search(self, title):
+        url = '{}{{"searchKey":"{}"}}'.format(self.SEARCH_URL, quote(title, 'utf-8'))
+        logging.info(url)
+        r = requests.get(url)
+        htmlEtree = etree.HTML(r.text)
+        songsEle = htmlEtree.xpath('//*[@id="app"]/div/div[2]/div[1]/div[2]/div/table/tbody/tr')
+        songs = []
+        cookies = requests.utils.dict_from_cookiejar(r.cookies)
+        for ele in songsEle:
+            songTitle = ''.join(ele.xpath('.//*[@class="song-name em"]/a//text()'))
+            songUrl = ''.join(ele.xpath('.//*[@class="song-name em"]/a/@href'))
+            artist = ''.join(ele.xpath('.//*[@class="singers COMPACT"]/a//text()'))
+            album = ''.join(ele.xpath('.//*[@class="album"]/a//text()'))
+            duration = ''.join(ele.xpath('td[5]/div/span/text()'))
+            if len(duration)>0:
+                duration = duration.split(':')
+                duration = int(duration[0]) * 60 + int(duration[1])
+            else:
+                duration = None
+            song = {
+                'title': songTitle,
+                'url': songUrl,
+                'artist': artist,
+                'album': album,
+                'duration': duration,
+                'cookies': cookies
+            }
+            if len(songTitle)>0 and len(artist)>0 and len(album)>0 and duration is not None:
+                songs.append(song)
+
+        logging.info(json.dumps(songs))
+        return songs
+
+    def getLyric(self, downloaderSong):
+        cookies=downloaderSong['cookies']
+        songId = re.findall('/([^/]*)$', downloaderSong['url'])[0]
+        payLoad = {
+            'songId': songId
+        }
+        #apiPath = '/api/lyric/getSongLyrics'
+        apiPath = '/api/song/initialize'
+        payLoad = {
+            'songId': songId
+        }
+
+        xmSgTk = cookies['xm_sg_tk']
+        sPram = self.genSPram(xmSgTk, apiPath, json.dumps(payLoad))
+        url = '{}{}&_s={}'.format(self.LYRIC_URL, json.dumps(payLoad), sPram)
+        logging.info(url)
+        r = requests.get(url, cookies=cookies)
+        data = r.json()
+        logging.info(json.dumps(data))
+        if data['code'] == 'SUCCESS':
+            lyrics = data['result']['data']['songLyric']
+            for lyric in lyrics:
+                if lyric['type'] == 2:
+                    return lyric['content']
+        return ''
+
+
+class NeteaseLrcDownloader(LrcDownloader):
 
     SEARCH_API = 'https://api.imjad.cn/cloudmusic/?type=search&search_type=1&s='
     LYRIC_API = 'https://api.imjad.cn/cloudmusic/?type=lyric&id='
 
-    def __init__(self):
-        pass
 
     def search(self, title):
         url = '{}{}'.format(self.SEARCH_API, quote(title, 'utf-8'))
@@ -108,31 +259,42 @@ class NeteaseLrcDownloader(object):
         logging.info(r.text)
         ret = r.json()
         if ret['code'] == 200:
-            return ret['result']['songs']
+            if 'result' in ret.keys() and 'songs' in ret['result'].keys():
+                songs = ret['result']['songs']
+                for song in songs:
+                    song['title'] = song['name']
+                    song['duration'] = song['dt']
+                return songs
         return []
 
-    def getLyric(self, songId):
+    def getLyric(self, song):
+        songId = song['id']
         url = '{}{}'.format(self.LYRIC_API, songId)
         r = requests.get(url)
         logging.info(r.text)
         ret = r.json()
         if ret['code'] == 200 and 'lrc' in ret.keys() and ret['lrc']['lyric'] is not None:
             return ret['lrc']['lyric']
-        return ""
+        return ''
+
 
 
 class Player:
     def __init__(self):
+
+        self.cmusInfo = CmusInfo()
+        self.downloader = {
+            'netease': NeteaseLrcDownloader(),
+            'xiami': XiamiLrcDownloader()
+        }
+        self.lrcParser = LrcParser()
+
         self.lyrics = None
         self.current = 0
 
         self.song = {}
         self.data = None
         self.playLyricFilePath = None
-
-        self.downloader = {
-            'netease': NeteaseLrcDownloader()
-        }
 
         self.notifyevent = Event()
 
@@ -145,42 +307,36 @@ class Player:
         return lyricFilePath
 
 
-    def query_lrc(self, song, download):
+    def queryLrc(self, song, download):
         if not os.path.isdir(CMUS_LRC_HOME):
             os.makedirs(CMUS_LRC_HOME)
         self.playLyricFilePath = self.genLyricFilePath(song)
         if os.path.isfile(self.playLyricFilePath):
-            return parse(self.playLyricFilePath)
+            return self.lrcParser.parse(self.playLyricFilePath)
         else:
             if download:
                 if self.downloadLrc(song):
-                    return parse(self.playLyricFilePath)
+                    return self.lrcParser.parse(self.playLyricFilePath)
             return {}
 
     def downloadLrc(self, songInfo):
-        downloader = self.downloader['netease']
-        songList = downloader.search(songInfo['title'])
-        matchSong = None
-        matchVal = 0
-        for song in songList:
-            titleVal = difflib.SequenceMatcher(None, song['name'], songInfo['title']).quick_ratio()
-            titleVal = titleVal * 3
-
-            dtVal = math.pow((songInfo['duration']-abs((song['dt']//1000)-songInfo['duration']))/songInfo['duration'], 3) * 5
-
-            arVal = 0
-            if 'ar' in song.keys() and song['ar'] is not None:
-                for ar in song['ar']:
-                    arVal = arVal + difflib.SequenceMatcher(None, ar['name'], songInfo['artist']).quick_ratio()
-
-            tempMatchVal = titleVal + dtVal + arVal
-
-            if tempMatchVal > matchVal:
-                matchSong = song
-                matchVal = tempMatchVal
-        lyric = downloader.getLyric(matchSong['id'])
+        bestMatchData = None
+        for key in self.downloader.keys():
+            downloader = self.downloader[key]
+            songList = downloader.search(songInfo['title'])
+            matchData = downloader.match(songList, self.song)
+            logging.info(matchData)
+            lyric = downloader.getLyric(matchData['song'])
+            if len(lyric) != 0 and (bestMatchData is None or matchData['value']>bestMatchData['value']):
+                bestMatchData = matchData
+                bestMatchData['downloader'] = downloader
+                bestMatchData['lyric'] = lyric
+        #downloader = self.downloader['netease']
+        #lyric = bestMatchData['downloader'].getLyric(bestMatchData['song'])
+        if bestMatchData == None:
+            return False
         with open(self.genLyricFilePath(songInfo), 'w') as f:
-            f.write(lyric)
+            f.write(bestMatchData['lyric'])
             f.close()
             return True
 
@@ -188,7 +344,7 @@ class Player:
 
 
     @asyncio.coroutine
-    def _get_lyrics(self):
+    def getLyrics(self):
         data = self.data
         if data['title']:
             #logging.info('playing %s' % data['title'])
@@ -198,7 +354,7 @@ class Player:
             if 'title' not in self.song.keys() or self.song['title'] != self.data['title']:
                 self.song = {'title': self.data['title'], 'artist': self.data['artist'], 'duration': self.data['duration']}
                 download = True
-            self.lyrics = self.query_lrc(self.song, download)
+            self.lyrics = self.queryLrc(self.song, (not DISABLE_DOWNLOAD) and download)
 
     def query_curline(self):
         data = self.data
@@ -222,36 +378,6 @@ class Player:
         return False
 
 
-    def _get_cmus_info(self):
-        text = os.popen('cmus-remote -Q').read()
-        duration, position, title, artist, album = self._parse_cmus(text)
-        data = {'duration': duration, 'position': position, 'title': title, 'artist': artist, 'album': album}
-        return data
-
-
-    def _parse_cmus(self, text):
-        '''
-        status playing
-        '''
-        position = 0
-        duration = 0
-        album = ''
-        artist = ''
-        title = ''
-        lines = text.split('\n')
-        for line in lines:
-            if 'position' in line:
-                position = int(line.split(' ')[1])
-            elif 'tag artist' in line:
-                artist = line.replace('tag artist ', '').replace('/', '-')
-            elif 'tag album' in line:
-                album = line.replace('tag album ', '').replace('/', '-')
-            elif 'tag title' in line:
-                title = line.replace('tag title ', '').replace('/', '-')
-            elif 'duration' in line:
-                duration = int(line.split(' ')[1])
-
-        return duration, position, title, artist, album
 
 
     def run(self, stdscr):
@@ -275,14 +401,14 @@ class Player:
             #curses.resizeterm(self.win_maxyx[0], 16383)
             #self.win = curses.newpad(self.win_maxyx[0], 16383)
             self.win.resize(self.win_maxyx[0], 16383)
-            data = self._get_cmus_info()
+            data = self.cmusInfo.getInfo()
             #if self.data is not None and data['position'] == self.data['position']:
             #    continue
             self.data = data
             cur = self.query_curline()
             if (-1 == cur):
                 self.showinfo({'title': self.data['title'], 'artist': self.data['artist']})
-                asyncio.run(self._get_lyrics())
+                asyncio.run(self.getLyrics())
             else:
                 self.scroll(self.win, cur)
 
