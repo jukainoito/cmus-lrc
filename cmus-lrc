@@ -71,11 +71,8 @@ class LrcParser(object):
         except:
             return {}
 
-        reLyric = re.compile(r'\[\d\d:\d\d.\d{2,3}\]')
+        reLyric = re.compile(r'(\[\d+:\d+(\.\d+)?\])')
         lyrics = self.parseLines(lines, reLyric)
-        if len(lyrics) == 0:
-            reLyric = re.compile(r'\[\d\d:\d\d]')
-            lyrics = self.parseLines(lines, reLyric)
 
         return lyrics
 
@@ -86,21 +83,25 @@ class LrcParser(object):
             matchs = re.findall(reLyric, line)
             value = re.sub(reLyric, '', line)
             for match in matchs:
-                lyrics[self.getTime(match)] = value
+                linetime = self.getTime(match[0])
+                while linetime in lyrics.keys():
+                    linetime = linetime + 1
+                lyrics[linetime] = value
 
         return sorted(lyrics.items(), key=lambda i: i[0])
 
 
     def getTime(self, match):
-        if len(match) > 7:
-            minutes = int(match[1:3])
-            seconds = int(match[4:6])
-            miliseconds = int(match[7:9])
-        else:
-            minutes = int(match[1:3])
-            seconds = int(match[4:6])
-            miliseconds = 0
-        return minutes * 60 + seconds + miliseconds / 100.0
+        n = re.findall('(\d+)', match)
+
+        minutes = int(n[0])
+        seconds = int(n[1])
+        miliseconds = 0
+
+        if len(n) == 3:
+            miliseconds = int(n[2]) * math.pow(10, 3-len(n[2]))
+
+        return (minutes * 60 + seconds) * 1000 + miliseconds
 
 
 class CmusInfo(object):
@@ -326,13 +327,14 @@ class Player:
             songList = downloader.search(songInfo['title'])
             matchData = downloader.match(songList, self.song)
             logging.info(matchData)
+            if matchData['song'] is None:
+                continue
             lyric = downloader.getLyric(matchData['song'])
             if len(lyric) != 0 and (bestMatchData is None or matchData['value']>bestMatchData['value']):
                 bestMatchData = matchData
-                bestMatchData['downloader'] = downloader
+                bestMatchData['type'] = key
                 bestMatchData['lyric'] = lyric
-        #downloader = self.downloader['netease']
-        #lyric = bestMatchData['downloader'].getLyric(bestMatchData['song'])
+        logging.info(bestMatchData)
         if bestMatchData == None:
             return False
         with open(self.genLyricFilePath(songInfo), 'w') as f:
@@ -364,7 +366,7 @@ class Player:
         if not self.lyrics or len(self.lyrics) == 0:
             return -1
         for i, (k, _) in enumerate(self.lyrics):
-            if k >= data['position']:
+            if k >= data['position'] * 1000:
                 return i - 1 if i - 1 >= 0 else 0
         return len(self.lyrics) - 1
 
