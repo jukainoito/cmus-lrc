@@ -12,8 +12,13 @@ from abc import ABCMeta, abstractmethod
 
 import logging
 
-from threading import Event
+#from threading import Event
+import time
+import threading
+import ctypes
+import inspect
 import asyncio
+from subprocess import PIPE, Popen
 
 import requests
 from urllib.parse import quote
@@ -27,6 +32,7 @@ import math
 import hashlib
 
 import curses
+import wcwidth
 
 import argparse
 
@@ -62,19 +68,92 @@ def configure_logging():
         logging.debug(mem_top())
 
 
-class LrcParser(object):
+class Lyric(object):
 
-    def parse(self, path):
+    def __init__(self, song):
+        self.song = song
+        self.filepath = self.genLyricFilePath(song)
+        self.raw = None
+        self.lyrics = self.readLrcFile(self.filepath)
+        self.isWrong = self.getIsWrong()
+        self.shift = 0
+        self.curline = -1
+        self.nomatch = False
+
+    def genLyricFilePath(self, song):
+        lyricFileName = '{} - {}.lrc'.format(song['artist'], song['title'])
+        #lyricFileName = songInfo['artist'] + ' - ' + songInfo['title'] + '.lrc'
+        lyricFilePath = os.path.join(CMUS_LRC_HOME, lyricFileName)
+        return lyricFilePath
+
+    def getIsWrong(self):
+        wrongFile = self.filepath + '.wrong'
+        if os.path.isfile(wrongFile):
+            return True
+        return False
+
+    def save(self):
+        if self.lyrics is None or len(self.lyrics) == 0:
+            return None
+        wrongFile = self.filepath + '.wrong'
+        if self.isWrong:
+            open(wrongFile, 'w')
+            os.remove(self.filepath)
+        else:
+            if os.path.isfile(wrongFile):
+                os.remove(wrongFile)
+            lrcContent = self.genLrc(self.lyrics)
+            with open(self.filepath, 'w') as f:
+                f.write(lrcContent)
+                f.close()
+                return True
+        return False
+
+    def genLrc(self, lyrics):
+        if lyrics is None:
+            return None
+        lines = ''
+        for (k, v) in lyrics:
+            miliseconds = k % 1000
+            totalSeconds = k / 1000
+            seconds = totalSeconds % 60
+            minutes = totalSeconds // 60
+            line = '[%02d:%02d.%03d]' % (minutes, seconds, miliseconds)
+            line = line + v + '\n'
+            lines = lines + line
+        return lines
+
+    def readLrcFile(self, filepath):
+        if filepath == None or not os.path.isfile(filepath):
+            return None
         try:
-            with open(path, 'r') as f:
+            with open(filepath, 'r') as f:
                 lines = f.readlines()
+                self.raw = lines
         except:
             return {}
 
+        self.lyrics = self.parse(lines)
+        return self.lyrics
+
+    def readLyricsLines(self, lines):
+        if lines is None:
+            return None
+        self.lyrics = self.parse(lines.split('\n'))
+        self.raw = lines
+        return self.lyrics
+
+    def parse(self, lines):
         reLyric = re.compile(r'(\[\d+:\d+(\.\d+)?\])')
         lyrics = self.parseLines(lines, reLyric)
 
         return lyrics
+
+    def reload(self):
+        self.raw = None
+        self.lyrics = self.readLrcFile(self.filepath)
+        self.shift = 0
+        self.isWrong = self.getIsWrong()
 
     def parseLines(self, lines, reLyric):
         lyrics = {}
@@ -103,15 +182,37 @@ class LrcParser(object):
 
         return (minutes * 60 + seconds) * 1000 + miliseconds
 
+    def setShift(self, miliseconds):
+        if self.lyrics is not None:
+            self.shift = self.shift + miliseconds
+            newLyrics = []
+            for (k,v) in self.lyrics:
+                newLyrics.append((k+miliseconds, v))
+            self.lyrics = newLyrics
+
+    def queryCurLine(self, position):
+        if self.lyrics is None:
+            return -1
+        curline = 0
+        for i, (k, _) in enumerate(self.lyrics):
+            if k >= (position * 1000):
+                break
+            curline = i
+        self.curline = curline
+        return curline
 
 class CmusInfo(object):
 
     def getInfo(self):
-        text = os.popen('cmus-remote -Q').read()
-        duration, position, title, artist, album = self.parse(text)
-        data = {'duration': duration, 'position': position, 'title': title, 'artist': artist, 'album': album}
-        return data
-
+        try:
+            runner = Popen('cmus-remote -Q', shell=True, stdout=PIPE, stderr=PIPE)
+            stdout, stderr = runner.communicate()
+            duration, position, title, artist, album = self.parse(stdout.decode("utf-8"))
+            data = {'duration': duration, 'position': position, 'title': title, 'artist': artist, 'album': album}
+            return data
+        except Exception:
+            pass
+        return None
 
     def parse(self, text):
         position = 0
@@ -125,11 +226,11 @@ class CmusInfo(object):
             if 'position' in line:
                 position = int(line.split(' ')[1])
             elif 'tag artist' in line:
-                artist = line.replace('tag artist ', '').replace('/', '-')
+                artist = line.replace('tag artist ', '').replace('/', '-').strip()
             elif 'tag album' in line:
-                album = line.replace('tag album ', '').replace('/', '-')
+                album = line.replace('tag album ', '').replace('/', '-').strip()
             elif 'tag title' in line:
-                title = line.replace('tag title ', '').replace('/', '-')
+                title = line.replace('tag title ', '').replace('/', '-').strip()
             elif 'duration' in line:
                 duration = int(line.split(' ')[1])
 
@@ -183,7 +284,7 @@ class XiamiLrcDownloader(LrcDownloader):
     #LYRIC_URL = 'https://www.xiami.com/api/lyric/getSongLyrics?_q='
     LYRIC_URL = 'https://www.xiami.com/api/song/initialize?_q='
 
-    def genSPram(self, xmSgTk, apiPath, queryStr):
+    def genSParam(self, xmSgTk, apiPath, queryStr):
         data = '{}_xmMain_{}_{}'.format(xmSgTk.split('_')[0], apiPath, queryStr)
         return hashlib.md5(data.encode('utf8')).hexdigest()
 
@@ -233,8 +334,8 @@ class XiamiLrcDownloader(LrcDownloader):
         }
 
         xmSgTk = cookies['xm_sg_tk']
-        sPram = self.genSPram(xmSgTk, apiPath, json.dumps(payLoad))
-        url = '{}{}&_s={}'.format(self.LYRIC_URL, json.dumps(payLoad), sPram)
+        sParam = self.genSParam(xmSgTk, apiPath, json.dumps(payLoad))
+        url = '{}{}&_s={}'.format(self.LYRIC_URL, json.dumps(payLoad), sParam)
         logging.info(url)
         r = requests.get(url, cookies=cookies)
         data = r.json()
@@ -279,211 +380,413 @@ class NeteaseLrcDownloader(LrcDownloader):
         return ''
 
 
+class LrcPlayer(object):
 
-class Player:
+    LRC_UI = 1
+    SEARCH_UI = 2
+
+    PROMPT = {
+        'EXIT': 'Type :q to exit',
+        'INVALID_COMMAND': 'invalid command',
+        'INVALID_PARAM': 'invalid parameter',
+        'SAVE_NOTHING': 'no thing saveed',
+        'SAVE_ERROR': 'save error'
+    }
+
     def __init__(self):
+        self.cmusInfoGetter = CmusInfo()
 
-        self.cmusInfo = CmusInfo()
         self.downloader = {
             'netease': NeteaseLrcDownloader(),
             'xiami': XiamiLrcDownloader()
         }
-        self.lrcParser = LrcParser()
 
-        self.lyrics = None
-        self.current = 0
+        self.curUI = self.LRC_UI
 
-        self.song = {}
-        self.data = None
-        self.playLyricFilePath = None
+        self.lrc = None
 
-        self.notifyevent = Event()
+        self.cmusInfo = None
 
-        self.win = None
-        curses.wrapper(self.run)
+        self.win = {}
+        self.threads = {}
 
-    def genLyricFilePath(self, songInfo):
-        lyricFileName = songInfo['artist'] + ' - ' + songInfo['title'] + '.lrc'
-        lyricFilePath = os.path.join(CMUS_LRC_HOME, lyricFileName)
-        return lyricFilePath
+        curses.wrapper(self.init)
 
+    def init(self, stdscr):
+        self.initWin(stdscr)
+        self.initThreads()
 
-    def queryLrc(self, song, download):
-        if not os.path.isdir(CMUS_LRC_HOME):
-            os.makedirs(CMUS_LRC_HOME)
-        self.playLyricFilePath = self.genLyricFilePath(song)
-        if os.path.isfile(self.playLyricFilePath):
-            return self.lrcParser.parse(self.playLyricFilePath)
-        else:
-            if download:
-                if self.downloadLrc(song):
-                    return self.lrcParser.parse(self.playLyricFilePath)
-            return {}
+        while True:
+            ch = self.win['win'].get_wch()
+            self.parseInput(ch)
 
-    def downloadLrc(self, songInfo):
-        bestMatchData = None
-        for key in self.downloader.keys():
-            downloader = self.downloader[key]
-            songList = downloader.search(songInfo['title'])
-            matchData = downloader.match(songList, self.song)
-            logging.info(matchData)
-            if matchData['song'] is None:
-                continue
-            lyric = downloader.getLyric(matchData['song'])
-            if len(lyric) != 0 and (bestMatchData is None or matchData['value']>bestMatchData['value']):
-                bestMatchData = matchData
-                bestMatchData['type'] = key
-                bestMatchData['lyric'] = lyric
-        logging.info(bestMatchData)
-        if bestMatchData == None:
-            return False
-        with open(self.genLyricFilePath(songInfo), 'w') as f:
-            f.write(bestMatchData['lyric'])
-            f.close()
-            return True
+    def asyncioThreadLoop(self, loop):
+        asyncio.set_event_loop(loop)
+        loop.run_forever()
 
-        return False
+    def initThreads(self):
+        uiRefresher = threading.Thread(target=self.uiRefresh)
+        uiRefresher.setDaemon(True)
+        self.threads['uiRefresher'] = uiRefresher
 
+        newLoop = asyncio.new_event_loop()
+        looper = threading.Thread(target= self.asyncioThreadLoop, args=(newLoop,))
+        looper.setDaemon(True)
+        self.threads['looper'] = looper
+        self.newLoop = newLoop
+        self.downFuture = None
 
-    @asyncio.coroutine
-    def getLyrics(self):
-        data = self.data
-        if data['title']:
-            #logging.info('playing %s' % data['title'])
-            if DEBUG:
-                logging.debug(mem_top())
-            download = False
-            if 'title' not in self.song.keys() or self.song['title'] != self.data['title']:
-                self.song = {'title': self.data['title'], 'artist': self.data['artist'], 'duration': self.data['duration']}
-                download = True
-            self.lyrics = self.queryLrc(self.song, (not DISABLE_DOWNLOAD) and download)
+        uiRefresher.start()
+        looper.start()
 
-    def query_curline(self):
-        data = self.data
-        if not self._compare_song(data):
-            self.lyrics = None
+    def getMaxyx(self):
+        # 获取当前 window 的最大宽高（以显示字节为单位）
+        maxyx = self.win['stdscr'].getmaxyx()
+        self.win['height'] = maxyx[0]
+        self.win['width'] = maxyx[1]
 
-        if not self.lyrics or len(self.lyrics) == 0:
-            return -1
-        for i, (k, _) in enumerate(self.lyrics):
-            if k >= data['position'] * 1000:
-                return i - 1 if i - 1 >= 0 else 0
-        return len(self.lyrics) - 1
-
-
-    def _compare_song(self, data):
-        if 'title' in data and 'title' in self.song and 'artist' in data and 'artist' in self.song:
-            if data['title'] == self.song['title'] and data['artist'] == self.song['artist']:
-                return True
-            else:
-                return False
-        return False
-
-
-
-
-    def run(self, stdscr):
+    def initWin(self, stdscr):
+        self.win['stdscr'] = stdscr
+        stdscr.clear()
         # 使用系统默认的配色
         curses.use_default_colors()
         # 指定当前行的配色。-1: 代表无背景色
-        curses.init_pair(6, curses.COLOR_CYAN, -1)
-        # 获取当前 window 的最大宽高（以显示字节为单位）
-        self.win_maxyx = stdscr.getmaxyx()
-        self.stdscr = stdscr
+        curses.init_pair(curses.COLOR_CYAN, curses.COLOR_CYAN, -1)
+        curses.init_pair(curses.COLOR_YELLOW, curses.COLOR_YELLOW, -1)
+        curses.init_pair(curses.COLOR_RED, curses.COLOR_RED, -1)
+
+        self.getMaxyx()
         # set cursor invisible
         curses.curs_set(0)
+        #curses.curs_set(1)
         curses.noecho()
-        self.win = curses.newpad(self.win_maxyx[0], 16383)
-        #self.win = stdscr
-        self.scroll(self.win, 0) # 从0行呈现
+        curses.raw()
+        #curses.cbreak()
+        stdscr.keypad(True)
+        win = curses.newpad(self.win['height'], 16383)
+        win.keypad(True)
 
-        # 使用 event.wait() 来产生 time tick 任务，每 0.5s 循环一次
-        while not self.notifyevent.wait(0.5):
-            self.win_maxyx = stdscr.getmaxyx()
-            #curses.resizeterm(self.win_maxyx[0], 16383)
-            #self.win = curses.newpad(self.win_maxyx[0], 16383)
-            self.win.resize(self.win_maxyx[0], 16383)
-            data = self.cmusInfo.getInfo()
-            #if self.data is not None and data['position'] == self.data['position']:
-            #    continue
-            self.data = data
-            cur = self.query_curline()
-            if (-1 == cur):
-                self.showinfo({'title': self.data['title'], 'artist': self.data['artist']})
-                asyncio.run(self.getLyrics())
+        self.win['win'] = win
+        self.win['insMode'] = False
+
+        win.move(self.win['height']-1, 0)
+
+    def uiRefresh(self):
+        while True:
+            preWidth = self.win['width']
+            self.getMaxyx()
+            if preWidth != self.win['width']:
+                self.win['win'].resize(self.win['width'], 16383)
+
+            self.cmusInfo = self.cmusInfoGetter.getInfo()
+
+            needLoad = False
+            if self.lrc is None and self.cmusInfo is not None:
+                needLoad = True
+            elif self.lrc is not None and self.cmusInfo is not None:
+                needLoad = not self.compareSong(self.cmusInfo, self.lrc.song)
+
+            if needLoad:
+                self.lrc = Lyric(self.cmusInfo)
+                if self.lrc.lyrics is None:
+                    if not self.lrc.isWrong and not DISABLE_DOWNLOAD and not self.lrc.nomatch:
+                        if self.downFuture is not None and not self.downFuture.done():
+                            pass
+                        else:
+                            future = asyncio.run_coroutine_threadsafe(self.getLyrics(), self.newLoop)
+                            self.downFuture = future
+
+            curline = -1
+            preCurline = self.lrc.curline
+            if self.lrc is not None and self.lrc.lyrics is not None:
+                curline = self.lrc.queryCurLine(self.cmusInfo['position'])
+
+            yx = self.win['win'].getyx()
+            #inputStr = self.win['win'].instr(self.win['height']-1, 0)
+            if self.curUI == self.LRC_UI:
+                if  curline == -1:
+                    self.showinfo()
+                else:
+                    self.showlrc()
+            #self.win['win'].addstr(self.win['height']-1, 0, inputStr)
+            self.win['win'].move(yx[0], yx[1])
+            self.win['win'].refresh(0, 0, 0, 0, self.win['height']-1, self.win['width']-1)
+
+            while self.downFuture is not None and not self.downFuture.done():
+                time.sleep(0.5)
+            if self.downFuture is not None:
+                self.downFuture = None
             else:
-                self.scroll(self.win, cur)
+                time.sleep(0.5)
+
+    @asyncio.coroutine
+    def getLyrics(self):
+        ret = None
+        song = self.lrc.song
+        if song['title'] is not None and len(song['title']) > 0:
+            bestMatchData = None
+            for dlType, downloader in self.downloader.items():
+                songList = downloader.search(song['title'])
+                matchData = downloader.match(songList, song)
+                if matchData['song'] is None:
+                    continue
+                lyric = downloader.getLyric(matchData['song'])
+                if lyric is not None and len(lyric) != 0 and (bestMatchData is None or matchData['value']>bestMatchData['value']):
+                    bestMatchData = matchData
+                    bestMatchData['type'] = dlType
+                    bestMatchData['lyric'] = lyric
+
+            if bestMatchData is not None:
+                self.lrc.readLyricsLines(bestMatchData['lyric'])
+                self.lrc.save()
+                ret = bestMatchData['lyric']
+            else:
+                self.lrc.nomatch = True
+        return ret
+
+    def cutStr(self, inputStr, width):
+        if inputStr is None or len(inputStr)==0:
+            return None, None
+        if width == 0:
+            return None, inputStr
+        if width >= wcwidth.wcswidth(inputStr):
+            return inputStr, None
+        cutPoint = -1
+        countWidth = 0
+        for i in range(0, len(inputStr)):
+            ch = inputStr[i]
+            countWidth = countWidth + wcwidth.wcwidth(ch)
+            if countWidth <= width:
+                cutPoint = i
+            else:
+                break
+        return inputStr[0: cutPoint], inputStr[cutPoint:]
+
+    def addLine(self, win, addStr, y, width, attr, align=1):
+        if addStr is None:
+            addStr = ''
+        space = width - wcwidth.wcswidth(addStr)
+        if align == 1:
+            spaceLeft = space//2
+            spaceRight = space - spaceLeft
+        elif align == 0:
+            spaceLeft = 0
+            spaceRight = space - spaceLeft
+        elif align == 2:
+            spaceRight = 0
+            spaceLeft = space - spaceRight
+        addStr = ' '*spaceLeft + addStr + ' '*spaceRight
+        win.addstr(y, 0, addStr, attr)
+
+    def addLines(self, win, lines, startY, height, width, align=1):
+        insLines = lines.copy()
+        for i in range(0, startY):
+            self.addLine(win, '', i, width, 0)
+
+        while startY < height and len(insLines)>0:
+            ins = insLines.pop(0)
+            insText, tmp = self.cutStr(ins['text'], width)
+            if tmp is not None:
+                insLines.insert(0, {'text': tmp, 'attr': ins['attr']})
+            self.addLine(win, insText, startY, width, ins['attr'], align)
+            startY = startY + 1
+
+        for i in range(startY, height):
+            self.addLine(win, '', i, width, 0)
+
+    def showlrc(self):
+        curline = self.lrc.curline
+        lyrics = self.lrc.lyrics
+
+        height = self.win['height'] - 1
+        width = self.win['width']
+
+        lines = [{'text': lyrics[curline][1], 'attr': curses.color_pair(curses.COLOR_CYAN) | curses.A_BOLD}]
+        curPos = height // 2
+
+        i = 1
+        while len(lines) < height:
+            pre = curline - i
+            if pre < 0:
+                preText = ''
+            else:
+                preText = lyrics[pre][1]
+            lines.insert(0, {'text': preText, 'attr': 0})
+            after = curline + i
+            if after >= len(lyrics):
+                aftText = ''
+            else:
+                aftText = lyrics[after][1]
+            lines.append({'text': aftText, 'attr': 0})
+            i = i + 1
+        self.addLines(self.win['win'], lines, 0, height, width)
 
 
-    def showinfo(self, song):
-        if 'title' in song:
-            title = song['title'].strip()
+    def showinfo(self):
+        title = self.cmusInfo['title']
+        artist = self.cmusInfo['artist']
+        if len(title) == 0:
+            title = 'Unknow song'
+        if len(artist) == 0:
+            artist = 'Unknow artist'
+
+        lines = [
+            {'text': title, 'attr': 0},
+            {'text': artist, 'attr': 0}
+        ]
+
+        height = self.win['height']
+        width = self.win['width']
+        self.addLines(self.win['win'], lines, height//2, height-1, width)
+
+    def showPrompt(self, prompt, attr=None):
+        if attr is None:
+            attr =  (curses.color_pair(curses.COLOR_YELLOW) | curses.A_BOLD)
+        self.addLine(self.win['win'], prompt, self.win['height']-1, self.win['width']-1, attr, 0)
+        self.win['win'].move(self.win['height']-1, 0)
+
+    def compareSong(self, song, anoSong):
+        if song is None or anoSong is None:
+            return False
+        if anoSong['title'] == song['title'] and anoSong['artist'] == song['artist'] and anoSong['album'] == song['album']:
+            return True
+        return False
+
+    def parseShiftParam(self, param):
+        if param is None:
+            return None
+        shiftTime = param.strip()
+        if len(shiftTime) == 0:
+            return None
+        s = shiftTime[-1]
+        n = shiftTime[:-1]
+        m = 1
+        if s.lower() == 's':
+            m = 1000
+        elif s.lower() == 'm':
+            m = 1000 * 60
+        elif s.lower() in '012345678.':
+            m = 1
+            n = shiftTime
         else:
-            title = 'Unknown song'
-        if 'artist' in song:
-            artist = song['artist'].strip()
-        else:
-            artist = 'Unknown artist'
-        wt = (len(title) + len(title.encode()))//2
-        wa = (len(artist) + len(artist.encode()))//2
-        h, w = self.win_maxyx
-        xt = (w-wt)//2 if w-wt>=0 else 0
-        xa = (w-wa)//2 if w-wa>=0 else 0
-
-        #try:
-        self.win.clear()
-        self.win.addstr(h//2-1, xt, title)
-        self.win.addstr(h//2, xa, artist)
-        self.win.refresh(0, 0, 0, 0, h-1, w-1)
-        #except Exception as e:
-        #    pass
+            raise ValueError
+        shiftMs = float(n) * m
+        return shiftMs
 
 
-
-    def scroll(self, win, cur):
-        '''
-        @param cur: 当前播放的行数，相对于 self.lyrics
-        '''
-        #if cur == self.current and cur != 0:
-        #    return
-        if not self.lyrics:
+    def handleCommand(self, commandLine):
+        commands = re.findall('^(q|quit|exit|save|qa|reload|wrong|search|shift)(\s+.*)?', commandLine, re.IGNORECASE)
+        if len(commands) == 0:
+            self.showPrompt(self.PROMPT['INVALID_COMMAND'], (curses.color_pair(curses.COLOR_RED) | curses.A_BOLD))
             return
 
-        if cur < len(self.lyrics) and cur >= 0:
-            self.current = cur
-        else:
-            return
+        command = commands[0][0].lower()
+        param = commands[0][1]
 
-        win.clear()
-        h, w = self.win_maxyx
-        begin = self.current - int(h * 0.4)
+        if command in ('save', 'qa'):
+            saveRet = self.lrc.save()
+            if saveRet is None:
+                self.showPrompt(self.PROMPT['SAVE_NOTHING'])
+            elif not saveRet:
+                self.showPrompt(self.PROMPT['SAVE_ERROR'], (curses.color_pair(curses.COLOR_RED) | curses.A_BOLD))
 
-        # try:
-        for i in range(0, h):
-            if i + begin < 0 or i + begin > len(self.lyrics) - 1:
-                win.addstr(i, 0, '')
+        if command in ('q', 'quit', 'exit', 'qa'):
+            curses.endwin()
+            quit(0)
+
+        if command in ('reload', ):
+            self.lrc.reload()
+
+        if command in ('wrong', ):
+            self.lrc.isWrong = True
+
+        if command in ('shift', ):
+            try:
+                shiftTime = self.parseShiftParam(param)
+                if shiftTime is not None:
+                    self.lrc.setShift(shiftTime)
+            except ValueError:
+                self.showPrompt(self.PROMPT['INVALID_PARAM'], (curses.color_pair(curses.COLOR_RED) | curses.A_BOLD))
+
+        if command in ('search', ):
+            pass
+
+
+    def parseInput(self, ch):
+        if ch == ':':
+            self.inputLen = 0
+            self.win['win'].deleteln()
+            self.win['win'].move(self.win['height']-1, 0)
+            self.win['insMode'] = True
+            curses.curs_set(1)
+
+        if ch == '\n':
+            inputStr = self.win['win'].instr(self.win['height']-1, 1)
+            inputStr = inputStr.decode('utf-8')
+            inputStr = inputStr.strip()
+            self.win['win'].deleteln()
+            curses.curs_set(0)
+            self.win['insMode'] = False
+            self.win['win'].move(self.win['height']-1, 0)
+            self.handleCommand(inputStr)
+            self.inputLen = 0
+
+        if  ch == chr(3):
+            self.win['win'].deleteln()
+            curses.curs_set(0)
+            self.win['insMode'] = False
+            self.win['win'].move(self.win['height']-1, 0)
+            self.showPrompt(self.PROMPT['EXIT'])
+            self.inputLen = 0
+
+        if self.win['insMode']:
+            nowyx = self.win['win'].getyx()
+            if ch in (curses.KEY_BACKSPACE, '\b', '\x7f'):
+                if nowyx[1] == 1:
+                    self.win['win'].deleteln()
+                    curses.curs_set(0)
+                    self.win['insMode'] = False
+                    self.win['win'].move(self.win['height']-1, 0)
+                    self.inputLen = 0
+                else:
+                    inputStr = self.win['win'].instr(self.win['height']-1, 0)
+                    inputStr = inputStr.decode('utf8')
+                    insX = nowyx[1]
+                    retStr = inputStr[:insX-1] + inputStr[insX:]
+                    self.win['win'].addstr(nowyx[0], 0, retStr)
+                    self.win['win'].move(nowyx[0], insX-1)
+                    self.inputLen = self.inputLen - 1
+
+            elif ch in (curses.KEY_LEFT, curses.KEY_RIGHT):
+                x = nowyx[1]
+                if ch == curses.KEY_LEFT:
+                    x = x - 1 if x > 1 else 1
+                elif ch == curses.KEY_RIGHT:
+                    x = x + 1
+                    if x >= self.inputLen:
+                        x = self.inputLen
+                self.win['win'].move(self.win['height']-1, x)
+            elif ch in (
+                curses.KEY_UP, curses.KEY_DOWN,
+                chr(4), chr(0), chr(49), chr(26), chr(24), chr(22), chr(2), chr(14), chr(44), chr(46), chr(31), chr(1), chr(19), chr(6), chr(7), chr(11), chr(12), chr(59), chr(39), chr(17), chr(23), chr(5), chr(18), chr(20), chr(25), chr(21), chr(9), chr(16), chr(15), chr(17), chr(27), chr(28), chr(29), chr(30), chr(57), chr(48), chr(61), chr(96)
+                ):
+                pass
             else:
-                k, v = self.lyrics[i + begin]
-                v = v.strip()
-                lw = (len(v) + len(v.encode()))//2
-                x = (w-lw)//2 if w-lw>=0 else 0
-                ls = len(v) if len(v) <= w else w
-                attr = 0
-                if i + begin == self.current:
-                    attr = curses.color_pair(6) | curses.A_BOLD
-                win.addnstr(i, x, v[0:ls], w-1, attr)
-                win.clrtoeol()
-                win.clearok(1)
-        win.refresh(0, 0, 0, 0, h-1, w-1)
-        # except Exception as e:
-            # win.clear()
-            # x = (w-len(str(e)))//2 if w-len(str(e)) >= 0 else 0
-            # l = len(str(e)) if len(str(e)) <= w else w
-            # win.addstr(h//2, x, str(e)[0:l-1])
-            # win.refresh()
+                if nowyx[1] == self.inputLen:
+                    self.win['win'].addch(ch)
+                else:
+                    inputStr = self.win['win'].instr(self.win['height']-1, 0)
+                    inputStr = inputStr.decode('utf8')
+                    insX = nowyx[1]
+                    retStr = inputStr[:insX] + ch + inputStr[insX:]
+                    self.win['win'].addstr(nowyx[0], 0, retStr)
+                    self.win['win'].move(nowyx[0], insX+1)
+                self.inputLen = self.inputLen + 1
+
+        self.getMaxyx()
+        self.win['win'].refresh(0, 0, 0, 0, self.win['height']-1, self.win['width']-1)
 
 
 if __name__ == '__main__':
     configure_logging()
-    player = Player()
-
+    player = LrcPlayer()
