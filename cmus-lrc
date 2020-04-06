@@ -12,7 +12,6 @@ from abc import ABCMeta, abstractmethod
 
 import logging
 
-#from threading import Event
 import time
 import threading
 import ctypes
@@ -27,6 +26,7 @@ import difflib
 import re
 import json
 from lxml import etree
+from string import Template
 
 import math
 import hashlib
@@ -385,19 +385,29 @@ class LrcPlayer(object):
     LRC_UI = 1
     SEARCH_UI = 2
 
+    UI_REFRESH_SEC = 0.5
+
+    ALIGN_LEFT = 0
+    ALIGN_CENTER = 1
+    ALIGN_RIGHT = 2
+
     PROMPT = {
         'EXIT': 'Type :q to exit',
         'INVALID_COMMAND': 'invalid command',
         'INVALID_PARAM': 'invalid parameter',
-        'SAVE_NOTHING': 'no thing saveed',
-        'SAVE_ERROR': 'save error'
+        'SAVE_NOTHING': 'nothing saved',
+        'SAVE_ERROR': 'save error',
+        'NO_CMUS_DATA': 'cmus is not working',
+        'NO_LYRIC_DATA': 'song lyric data is not exist'
     }
+
+    SEARCH_SIZE = 10
 
     def __init__(self):
         self.cmusInfoGetter = CmusInfo()
 
         self.downloader = {
-            'netease': NeteaseLrcDownloader(),
+            #'netease': NeteaseLrcDownloader(),
             'xiami': XiamiLrcDownloader()
         }
 
@@ -408,6 +418,16 @@ class LrcPlayer(object):
         self.cmusInfo = None
 
         self.win = {}
+        self.search = {
+            'keyword': None,
+            'searchFuture': None,
+            'downloadFuture': None,
+            'top': 0,
+            'cur': -1,
+            'selSong': None,
+            'ret': None,
+        }
+
         self.threads = {}
 
         curses.wrapper(self.init)
@@ -454,6 +474,7 @@ class LrcPlayer(object):
         curses.init_pair(curses.COLOR_CYAN, curses.COLOR_CYAN, -1)
         curses.init_pair(curses.COLOR_YELLOW, curses.COLOR_YELLOW, -1)
         curses.init_pair(curses.COLOR_RED, curses.COLOR_RED, -1)
+        curses.init_pair(curses.COLOR_BLUE, curses.COLOR_WHITE, curses.COLOR_BLUE)
 
         self.getMaxyx()
         # set cursor invisible
@@ -508,16 +529,58 @@ class LrcPlayer(object):
                     self.showinfo()
                 else:
                     self.showlrc()
+            elif self.curUI == self.SEARCH_UI:
+                self.showSearch()
             #self.win['win'].addstr(self.win['height']-1, 0, inputStr)
             self.win['win'].move(yx[0], yx[1])
             self.win['win'].refresh(0, 0, 0, 0, self.win['height']-1, self.win['width']-1)
 
             while self.downFuture is not None and not self.downFuture.done():
-                time.sleep(0.5)
+                time.sleep(self.UI_REFRESH_SEC)
             if self.downFuture is not None:
                 self.downFuture = None
             else:
-                time.sleep(0.5)
+                time.sleep(self.UI_REFRESH_SEC)
+
+    @asyncio.coroutine
+    def downloadSearchLyrics(self):
+        if self.search['selSong'] is not None:
+            selSong = self.search['selSong']
+            lyrics = self.downloader[selSong['type']].getLyric(selSong['song'])
+            if lyrics is not None and len(lyrics) != 0:
+                self.lrc.readLyricsLines(lyrics)
+            else:
+                self.showPrompt(self.PROMPT['NO_LYRIC_DATA'])
+        self.search = {
+            'keyword': None,
+            'searchFuture': None,
+            'downloadFuture': None,
+            'top': 0,
+            'cur': -1,
+            'selSong': None,
+            'ret': None,
+        }
+        self.curUI = self.SEARCH_UI
+
+    @asyncio.coroutine
+    def searchLyrics(self):
+        searchRet = []
+        if self.search['keyword'] is not None:
+            for dlType, downloader in self.downloader.items():
+                songList = downloader.search(self.search['keyword'])
+                last = len(songList)
+                last = self.SEARCH_SIZE if last > self.SEARCH_SIZE else last
+                for i in range(0, last):
+                    song = songList[i]
+                    searchRet.append({
+                        'type': dlType,
+                        'song': song
+                    })
+        self.search['ret'] = searchRet
+        self.search['cur'] = 0
+        self.search['searchFuture'] = None
+        return searchRet
+
 
     @asyncio.coroutine
     def getLyrics(self):
@@ -566,13 +629,13 @@ class LrcPlayer(object):
         if addStr is None:
             addStr = ''
         space = width - wcwidth.wcswidth(addStr)
-        if align == 1:
+        if align == self.ALIGN_CENTER:
             spaceLeft = space//2
             spaceRight = space - spaceLeft
-        elif align == 0:
+        elif align == self.ALIGN_LEFT:
             spaceLeft = 0
             spaceRight = space - spaceLeft
-        elif align == 2:
+        elif align == self.ALIGN_RIGHT:
             spaceRight = 0
             spaceLeft = space - spaceRight
         addStr = ' '*spaceLeft + addStr + ' '*spaceRight
@@ -620,6 +683,58 @@ class LrcPlayer(object):
             lines.append({'text': aftText, 'attr': 0})
             i = i + 1
         self.addLines(self.win['win'], lines, 0, height, width)
+
+    def showSearch(self):
+        if self.search['keyword'] is None or len(self.search['keyword']) == 0:
+            self.curUI = self.LRC_UI
+            return
+
+        height = self.win['height']
+        width = self.win['width']
+
+        if self.search['searchFuture'] is None:
+            if self.search['ret'] is None:
+                searchInfo = [
+                    {'text': 'Searching...', 'attr': 0},
+                    {'text': 'keyword: {}'.format(self.search['keyword']), 'attr': 0}
+                ]
+                self.addLines(self.win['win'], searchInfo, height//2, height-1, width)
+                future = asyncio.run_coroutine_threadsafe(self.searchLyrics(), self.newLoop)
+                self.search['searchFuture'] = future
+            else:
+                if self.search['downloadFuture'] is None:
+                    self.showSearchResult()
+                else:
+                    song = self.search['selSong']['song']
+                    downloadInfo = [
+                        {'text': 'Downloading...', 'attr': 0},
+                        {'text': 'Title: {}'.format(song['title']), 'attr': 0},
+                        {'text': 'Artist: {}'.format(song['artist']), 'attr': 0},
+                        {'text': 'Album: {}'.format(song['album']), 'attr': 0}
+                    ]
+                    self.addLines(self.win['win'], downloadInfo, height//2, height-1, width)
+
+
+    def showSearchResult(self):
+        showList = self.search['ret']
+        if showList is None:
+            return
+        lines = []
+        cur = self.search['cur']
+        height = self.win['height'] - 1
+        width = self.win['width']
+        top = self.search['top']
+        showList = showList[top:top+height]
+        i = 0
+        for item in showList:
+            text = '{} {} album:{} from:{}'.format(item['song']['title'], item['song']['artist'], item['song']['album'], item['type'])
+            attr = 0
+            if i == cur:
+                attr = curses.color_pair(curses.COLOR_BLUE)
+            lines.append({'text': text, 'attr': attr})
+            i = i + 1
+        logging.info('{}'.format(lines))
+        self.addLines(self.win['win'], lines, 0, height, width, self.ALIGN_LEFT)
 
 
     def showinfo(self):
@@ -709,7 +824,15 @@ class LrcPlayer(object):
                 self.showPrompt(self.PROMPT['INVALID_PARAM'], (curses.color_pair(curses.COLOR_RED) | curses.A_BOLD))
 
         if command in ('search', ):
-            pass
+            if self.cmusInfo == None:
+                self.showPrompt(self.PROMPT['NO_CMUS_DATA'])
+                return
+            self.curUI = self.SEARCH_UI
+            if len(param) == 0 :
+                param = '${title}'
+            keyword = Template(param)
+            keyword = keyword.safe_substitute(self.cmusInfo)
+            self.search['keyword'] = keyword
 
 
     def parseInput(self, ch):
@@ -720,7 +843,7 @@ class LrcPlayer(object):
             self.win['insMode'] = True
             curses.curs_set(1)
 
-        if ch == '\n':
+        if ch == '\n' and self.win['insMode']:
             inputStr = self.win['win'].instr(self.win['height']-1, 1)
             inputStr = inputStr.decode('utf-8')
             inputStr = inputStr.strip()
@@ -738,6 +861,43 @@ class LrcPlayer(object):
             self.win['win'].move(self.win['height']-1, 0)
             self.showPrompt(self.PROMPT['EXIT'])
             self.inputLen = 0
+
+        if not self.win['insMode'] and self.curUI == self.SEARCH_UI:
+            yx = self.win['win'].getyx()
+            self.getMaxyx()
+            if ch in (curses.KEY_EXIT, ):
+                self.search = {
+                    'keyword': None,
+                    'searchFuture': None,
+                    'downloadFuture': None,
+                    'top': 0,
+                    'cur': -1,
+                    'selSong': None,
+                    'ret': None,
+                }
+            if ch in (curses.KEY_UP, curses.KEY_DOWN):
+                cur = self.search['cur']
+                top = self.search['top']
+                height = self.win['height'] - 1
+                retSize = len(self.search['ret'])
+                if ch == curses.KEY_UP:
+                    cur = cur - 1
+                if ch == curses.KEY_DOWN:
+                    cur = cur + 1
+                if cur < 0:
+                    cur = 0
+                if cur >= retSize:
+                    cur = retSize
+                self.search['cur'] = cur
+
+            if ch == '\n' and self.search['ret'] is not None:
+                self.search['selSong'] = self.search['ret'][self.search['cur']]
+                future = asyncio.run_coroutine_threadsafe(self.downloadSearchLyrics(), self.newLoop)
+                self.search['downloadFuture'] = future
+
+            self.showSearchResult()
+            self.win['win'].move(yx[0], yx[1])
+            self.win['win'].refresh(0, 0, 0, 0, self.win['height']-1, self.win['width']-1)
 
         if self.win['insMode']:
             nowyx = self.win['win'].getyx()
