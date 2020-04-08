@@ -34,15 +34,22 @@ import hashlib
 import curses
 import wcwidth
 
+
+# netease lrc import
+import random
+from urllib.parse import unquote
+from base64 import b64encode
+from Crypto.Cipher import AES
+
 import argparse
 
 parser = argparse.ArgumentParser()
 parser.add_argument('-debug', '--debug', help='debug', action='store_true')
 parser.add_argument('-log', '--log', help='logfile save path', action='store')
 parser.add_argument('--lyrics-dir', help='lyrics dir', action='store')
-parser.add_argument('--disable-download', help='disable download', action='store')
+parser.add_argument('--disable-download',
+                    help='disable download', action='store')
 args = parser.parse_args()
-
 
 
 DEBUG = args.debug
@@ -56,7 +63,6 @@ if args.log is not None:
 if args.lyrics_dir is not None:
     CMUS_LRC_HOME = os.path.normpath(os.path.abspath(args.lyrics_dir))
 DISABLE_DOWNLOAD = args.disable_download
-
 
 
 def configure_logging():
@@ -169,7 +175,6 @@ class Lyric(object):
 
         return sorted(lyrics.items(), key=lambda i: i[0])
 
-
     def getTime(self, match):
         n = re.findall('(\d+)', match)
 
@@ -178,7 +183,7 @@ class Lyric(object):
         miliseconds = 0
 
         if len(n) == 3:
-            miliseconds = int(n[2]) * math.pow(10, 3-len(n[2]))
+            miliseconds = int(n[2]) * math.pow(10, 3 - len(n[2]))
 
         return (minutes * 60 + seconds) * 1000 + miliseconds
 
@@ -186,8 +191,8 @@ class Lyric(object):
         if self.lyrics is not None:
             self.shift = self.shift + miliseconds
             newLyrics = []
-            for (k,v) in self.lyrics:
-                newLyrics.append((k+miliseconds, v))
+            for (k, v) in self.lyrics:
+                newLyrics.append((k + miliseconds, v))
             self.lyrics = newLyrics
 
     def queryCurLine(self, position):
@@ -201,14 +206,18 @@ class Lyric(object):
         self.curline = curline
         return curline
 
+
 class CmusInfo(object):
 
     def getInfo(self):
         try:
-            runner = Popen('cmus-remote -Q', shell=True, stdout=PIPE, stderr=PIPE)
+            runner = Popen('cmus-remote -Q', shell=True,
+                           stdout=PIPE, stderr=PIPE)
             stdout, stderr = runner.communicate()
-            duration, position, title, artist, album = self.parse(stdout.decode("utf-8"))
-            data = {'duration': duration, 'position': position, 'title': title, 'artist': artist, 'album': album}
+            duration, position, title, artist, album = self.parse(
+                stdout.decode("utf-8"))
+            data = {'duration': duration, 'position': position,
+                    'title': title, 'artist': artist, 'album': album}
             return data
         except Exception:
             pass
@@ -226,16 +235,18 @@ class CmusInfo(object):
             if 'position' in line:
                 position = int(line.split(' ')[1])
             elif 'tag artist' in line:
-                artist = line.replace('tag artist ', '').replace('/', '-').strip()
+                artist = line.replace(
+                    'tag artist ', '').replace('/', '-').strip()
             elif 'tag album' in line:
-                album = line.replace('tag album ', '').replace('/', '-').strip()
+                album = line.replace(
+                    'tag album ', '').replace('/', '-').strip()
             elif 'tag title' in line:
-                title = line.replace('tag title ', '').replace('/', '-').strip()
+                title = line.replace(
+                    'tag title ', '').replace('/', '-').strip()
             elif 'duration' in line:
                 duration = int(line.split(' ')[1])
 
         return duration, position, title, artist, album
-
 
 
 class LrcDownloader:
@@ -253,15 +264,21 @@ class LrcDownloader:
         matchSong = None
         matchVal = 0
         for song in downloaderSongList:
-            titleVal = difflib.SequenceMatcher(None, song['title'], targetPlayerSong['title']).quick_ratio()
+            titleVal = difflib.SequenceMatcher(
+                None, song['title'], targetPlayerSong['title']).quick_ratio()
             titleVal = titleVal * self.TITLE_BASE_VAL
 
-            dtVal = math.pow((targetPlayerSong['duration']-abs((song['duration']//1000)-targetPlayerSong['duration']))/targetPlayerSong['duration'], 3) * self.DURATION_BASE_VAL
+            dtVal = math.pow((targetPlayerSong['duration'] - abs((song['duration'] // 1000) - targetPlayerSong[
+                             'duration'])) / targetPlayerSong['duration'], 3) * self.DURATION_BASE_VAL
 
             arVal = 0
             if 'ar' in song.keys() and song['ar'] is not None:
                 for ar in song['ar']:
-                    arVal = arVal + difflib.SequenceMatcher(None, ar['name'], targetPlayerSong['artist']).quick_ratio() * self.ARTIST_BASE_VAL
+                    arVal = arVal + difflib.SequenceMatcher(None, ar['name'], targetPlayerSong[
+                                                            'artist']).quick_ratio() * self.ARTIST_BASE_VAL
+            elif 'artist' in song.keys():
+                arVal = difflib.SequenceMatcher(None, song['artist'], targetPlayerSong[
+                                                'artist']).quick_ratio() * self.ARTIST_BASE_VAL
 
             tempMatchVal = titleVal + dtVal + arVal
 
@@ -285,24 +302,29 @@ class XiamiLrcDownloader(LrcDownloader):
     LYRIC_URL = 'https://www.xiami.com/api/song/initialize?_q='
 
     def genSParam(self, xmSgTk, apiPath, queryStr):
-        data = '{}_xmMain_{}_{}'.format(xmSgTk.split('_')[0], apiPath, queryStr)
+        data = '{}_xmMain_{}_{}'.format(
+            xmSgTk.split('_')[0], apiPath, queryStr)
         return hashlib.md5(data.encode('utf8')).hexdigest()
 
     def search(self, title):
-        url = '{}{{"searchKey":"{}"}}'.format(self.SEARCH_URL, quote(title, 'utf-8'))
+        url = '{}{{"searchKey":"{}"}}'.format(
+            self.SEARCH_URL, quote(title, 'utf-8'))
         logging.info(url)
         r = requests.get(url)
         htmlEtree = etree.HTML(r.text)
-        songsEle = htmlEtree.xpath('//*[@id="app"]/div/div[2]/div[1]/div[2]/div/table/tbody/tr')
+        songsEle = htmlEtree.xpath(
+            '//*[@id="app"]/div/div[2]/div[1]/div[2]/div/table/tbody/tr')
         songs = []
         cookies = requests.utils.dict_from_cookiejar(r.cookies)
         for ele in songsEle:
-            songTitle = ''.join(ele.xpath('.//*[@class="song-name em"]/a//text()'))
+            songTitle = ''.join(
+                ele.xpath('.//*[@class="song-name em"]/a//text()'))
             songUrl = ''.join(ele.xpath('.//*[@class="song-name em"]/a/@href'))
-            artist = ''.join(ele.xpath('.//*[@class="singers COMPACT"]/a//text()'))
+            artist = ''.join(
+                ele.xpath('.//*[@class="singers COMPACT"]/a//text()'))
             album = ''.join(ele.xpath('.//*[@class="album"]/a//text()'))
             duration = ''.join(ele.xpath('td[5]/div/span/text()'))
-            if len(duration)>0:
+            if len(duration) > 0:
                 duration = duration.split(':')
                 duration = int(duration[0]) * 60 + int(duration[1])
             else:
@@ -315,14 +337,14 @@ class XiamiLrcDownloader(LrcDownloader):
                 'duration': duration,
                 'cookies': cookies
             }
-            if len(songTitle)>0 and len(artist)>0 and len(album)>0 and duration is not None:
+            if len(songTitle) > 0 and len(artist) > 0 and len(album) > 0 and duration is not None:
                 songs.append(song)
 
         logging.info(json.dumps(songs))
         return songs
 
     def getLyric(self, downloaderSong):
-        cookies=downloaderSong['cookies']
+        cookies = downloaderSong['cookies']
         songId = re.findall('/([^/]*)$', downloaderSong['url'])[0]
         payLoad = {
             'songId': songId
@@ -348,33 +370,904 @@ class XiamiLrcDownloader(LrcDownloader):
         return ''
 
 
+# START NETEASE RSA
+def aesEncrypt(text, key):
+    BS = AES.block_size
+    pad = lambda s: s + (BS - len(s) % BS) * \
+        chr(BS - len(s) % BS).encode('utf-8')
+    unpad = lambda s: s[0:-s[-1]]
+
+    data = text.encode('utf-8')
+    iv = '0102030405060708'.encode('utf-8')
+    key = key.encode('utf-8')
+    cipher = AES.new(key, AES.MODE_CBC, iv)
+    encrypted = cipher.encrypt(pad(data))
+    ret = b64encode(encrypted)
+
+    return ret.decode('utf-8')
+
+
+def genKey(a):
+    b = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+    c = ''
+    d = 0
+    while a > d:
+        e = random.randint(0, len(b) - 1)
+        c += b[e]
+        d = d + 1
+    return c
+
+
+def urshift(val, n):
+    return (val % 0x100000000) >> n
+
+
+def charToHex(c):
+    ZERO = 48
+    NINE = ZERO + 9
+    littleA = 97
+    littleZ = littleA + 25
+    bigA = 65
+    bigZ = 65 + 25
+    if c >= ZERO and c <= NINE:
+        result = c - ZERO
+    elif c >= bigA and c <= bigZ:
+        result = 10 + c - bigA
+    elif c >= littleA and c <= littleZ:
+        result = 10 + c - littleA
+    else:
+        result = 0
+    return result
+
+
+def hexToDigit(s):
+    result = 0
+    sl = min(len(s), 4)
+    for i in range(0, sl):
+        result = result << 4
+        result = result | charToHex(ord(s[i]))
+    return result
+
+
+def biFromHex(s):
+    result = BigInt()
+    sl = len(s)
+    i = sl
+    j = 0
+    while i > 0:
+        start = max(i - 4, 0)
+        end = start + min(i, 4)
+        result.digits[j] = hexToDigit(s[start: end])
+        i = i - 4
+        j = j + 1
+    return result
+
+
+def biHighIndex(x):
+    result = len(x.digits) - 1
+    while result > 0 and x.digits[result] == 0:
+        result = result - 1
+    return result
+
+
+def biNumBits(x):
+    n = biHighIndex(x)
+    d = x.digits[n]
+    m = (n + 1) * bitsPerDigit
+    result = m
+    while result > m - bitsPerDigit:
+        if (d & 0x8000) != 0:
+            break
+        d = d << 1
+        result = result - 1
+    return result
+
+
+def reverseStr(s):
+    result = ''
+    i = len(s) - 1
+    while i > -1:
+        result = result + s[i]
+        i = i - 1
+    return result
+
+
+def biToString(x, radix):
+    b = BigInt()
+    b.digits[0] = radix
+    qr = biDivideModulo(x, b)
+    result = hexatrigesimalToChar[qr[1].digits[0]]
+    while biCompare(qr[0], bigZero) == 1:
+        qr = biDivideModulo(qr[0], b)
+        digit = qr[1].digits[0]
+        result = result + hexatrigesimalToChar[qr[1].digits[0]]
+    return ('-' if x.isNeg else '') + reverseStr(result)
+
+
+def digitToHex(n):
+    mask = 0xf
+    result = ''
+    for i in range(0, 4):
+        result = result + hexToChar[n & mask]
+        n = urshift(n, 4)
+    return reverseStr(result)
+
+
+def biToHex(x):
+    result = ''
+    n = biHighIndex(x)
+    i = biHighIndex(x)
+    while i > -1:
+        result = result + digitToHex(x.digits[i])
+        i = i - 1
+    return result
+
+
+def biDivide(x, y):
+    return biDivideModulo(x, y)[0]
+
+
+def biModulo(x, y):
+    return biDivideModulo(x, y)[1]
+
+
+def biDivideModulo(x, y):
+    nb = biNumBits(x)
+    tb = biNumBits(y)
+    origYIsNeg = y.isNeg
+    if nb < tb:
+        if x.isNeg:
+            q = biCopy(bigOne)
+            q.isNeg = not y.isNeg
+            x.isNeg = False
+            y.isNeg = False
+            r = biSubtract(y, x)
+            x.isNeg = True
+            y.isNeg = origYIsNeg
+        else:
+            q = BigInt()
+            r = biCopy(x)
+        return [q, r]
+
+    q = BigInt()
+    r = x
+    t = math.ceil(tb / bitsPerDigit) - 1
+    lam = 0
+    while y.digits[t] < biHalfRadix:
+        y = biShiftLeft(y, 1)
+        lam = lam + 1
+        tb = tb + 1
+        t = math.ceil(tb / bitsPerDigit) - 1
+    r = biShiftLeft(r, lam)
+    nb = nb + lam
+    n = math.ceil(nb / bitsPerDigit) - 1
+    b = biMultiplyByRadixPower(y, n - t)
+    while biCompare(r, b) != -1:
+        q.digits[n - t] = q.digits[n - t] + 1
+        r = biSubtract(r, b)
+    i = n
+    while i > t:
+        ri = 0 if (i >= len(r.digits)) else r.digits[i]
+        ri1 = 0 if (i - 1 >= len(r.digits)) else r.digits[i - 1]
+        ri2 = 0 if (i - 2 >= len(r.digits)) else r.digits[i - 2]
+        yt = 0 if (t >= len(y.digits)) else y.digits[t]
+        yt1 = 0 if (t - 1 >= len(y.digits)) else y.digits[t - 1]
+        if ri == yt:
+            q.digits[i - t - 1] = maxDigitVal
+        else:
+            q.digits[i - t - 1] = math.floor((ri * biRadix + ri1) / yt)
+
+        c1 = q.digits[i - t - 1] * ((yt * biRadix) + yt1)
+        c2 = (ri * biRadixSquared) + ((ri1 * biRadix) + ri2)
+        while c1 > c2:
+            q.digits[i - t - 1] = q.digits[i - t - 1] - 1
+            c1 = q.digits[i - t - 1] * ((yt * biRadix) | yt1)
+            c2 = (ri * biRadix * biRadix) + ((ri1 * biRadix) + ri2)
+
+        b = biMultiplyByRadixPower(y, i - t - 1)
+        r = biSubtract(r, biMultiplyDigit(b, q.digits[i - t - 1]))
+        if r.isNeg:
+            r = biAdd(r, b)
+            q.digits[i - t - 1] = q.digits[i - t - 1] - 1
+        i = i - 1
+
+    r = biShiftRight(r, lam)
+    q.isNeg = x.isNeg != origYIsNeg
+    if x.isNeg:
+        if origYIsNeg:
+            q = biAdd(q, bigOne)
+        else:
+            q = biSubtract(q, bigOne)
+        y = biShiftRight(y, lam)
+        r = biSubtract(y, r)
+    if r.digits[0] == 0 and biHighIndex(r) == 0:
+        r.isNeg = False
+    return [q, r]
+
+
+class RSAKeyPair():
+
+    def __init__(self, encryptionExponent, decryptionExponent, modulus):
+        self.e = biFromHex(encryptionExponent)
+        self.d = biFromHex(decryptionExponent)
+        self.m = biFromHex(modulus)
+        self.chunkSize = 2 * biHighIndex(self.m)
+        self.radix = 16
+        self.barrett = BarrettMu(self.m)
+
+
+class BarrettMu():
+
+    def __init__(self, m):
+        self.modulus = biCopy(m)
+        self.k = biHighIndex(self.modulus) + 1
+        b2k = BigInt()
+        b2k.digits[2 * self.k] = 1
+        self.mu = biDivide(b2k, self.modulus)
+        self.bkplus1 = BigInt()
+        self.bkplus1.digits[self.k + 1] = 1
+
+    def modulo(self, x):
+        q1 = biDivideByRadixPower(x, self.k - 1)
+        q2 = biMultiply(q1, self.mu)
+        q3 = biDivideByRadixPower(q2, self.k + 1)
+        r1 = biModuloByRadixPower(x, self.k + 1)
+        r2term = biMultiply(q3, self.modulus)
+        r2 = biModuloByRadixPower(r2term, self.k + 1)
+        r = biSubtract(r1, r2)
+        if r.isNeg:
+            r = biAdd(r, self.bkplus1)
+        rgtem = biCompare(r, self.modulus) >= 0
+        while rgtem:
+            r = biSubtract(r, self.modulus)
+            rgtem = biCompare(r, self.modulus) >= 0
+        return r
+
+    def multiplyMod(self, x, y):
+        xy = biMultiply(x, y)
+        return self.modulo(xy)
+
+    def powMod(self, x, y):
+        result = BigInt()
+        result.digits[0] = 1
+        a = x
+        k = y
+        while True:
+            if (k.digits[0] & 1) != 0:
+                result = self.multiplyMod(result, a)
+            k = biShiftRight(k, 1)
+            if k.digits[0] == 0 and biHighIndex(k) == 0:
+                break
+            a = self.multiplyMod(a, a)
+        return result
+
+
+def encryptedString(key, s):
+    a = []
+    sl = len(s)
+    i = 0
+    while i < sl:
+        a.append(ord(s[i]))
+        i = i + 1
+
+    while (len(a) % key.chunkSize) != 0:
+        a.append(0)
+        i = i + 1
+
+    al = len(a)
+    result = ''
+    i = 0
+    while i < al:
+        block = BigInt()
+        j = 0
+        k = i
+        while k < i + key.chunkSize:
+            block.digits[j] = a[k]
+            k = k + 1
+            block.digits[j] = block.digits[j] + (a[k] << 8)
+            k = k + 1
+            j = j + 1
+        i = i + key.chunkSize
+
+        crypt = key.barrett.powMod(block, key.e)
+        text = biToHex(crypt) if key.radix == 16 else biToString(
+            crypt, key.radix)
+
+        result = result + text + ' '
+    return result[:-1]
+
+
+def initRsa():
+    global maxDigits, ZERO_ARRAY, bigZero, bigOne, biRadixBase, biRadixBits, bitsPerDigit
+    global biRadix, biHalfRadix, biRadixSquared, maxDigitVal, maxInteger, dpl10, lr10
+    global hexatrigesimalToChar, hexToChar, highBitMasks, lowBitMasks
+    biRadixBase = 2
+    biRadixBits = 16
+    bitsPerDigit = biRadixBits
+    biRadix = 1 << 16
+    biHalfRadix = urshift(biRadix, 1)
+    biRadixSquared = biRadix * biRadix
+    maxDigitVal = biRadix - 1
+    maxInteger = 9999999999999998
+
+    setMaxDigits(131)
+
+    dpl10 = 15
+    lr10 = biFromNumber(1000000000000000)
+    hexatrigesimalToChar = [
+        '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+        'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j',
+        'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't',
+        'u', 'v', 'w', 'x', 'y', 'z']
+    hexToChar = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+                 'a', 'b', 'c', 'd', 'e', 'f']
+    highBitMasks = [0x0000, 0x8000, 0xC000, 0xE000, 0xF000, 0xF800,
+                    0xFC00, 0xFE00, 0xFF00, 0xFF80, 0xFFC0, 0xFFE0,
+                    0xFFF0, 0xFFF8, 0xFFFC, 0xFFFE, 0xFFFF]
+    lowBitMasks = [0x0000, 0x0001, 0x0003, 0x0007, 0x000F, 0x001F,
+                   0x003F, 0x007F, 0x00FF, 0x01FF, 0x03FF, 0x07FF,
+                   0x0FFF, 0x1FFF, 0x3FFF, 0x7FFF, 0xFFFF]
+
+
+def setMaxDigits(value):
+    global maxDigits, ZERO_ARRAY, bigZero, bigOne
+    maxDigits = value
+    ZERO_ARRAY = [0] * maxDigits
+    bigZero = BigInt()
+    bigOne = BigInt()
+    bigOne.digits[0] = 1
+
+
+def biCopy(bi):
+    result = BigInt(True)
+    result.digits = (bi.copy()).digits[0:]
+    result.isNeg = bi.isNeg
+    return result
+
+
+def biFromNumber(i):
+    result = BigInt()
+    result.isNeg = i < 0
+    i = abs(i)
+    j = 0
+    while i > 0:
+        j = j + 1
+        result.digits[j] = i & maxDigitVal
+        i = math.floor(i / biRadix)
+    return result
+
+
+def arrayCopy(src, srcStart, dest, destStart, n):
+    m = min(srcStart + n, len(src))
+    i = srcStart
+    j = destStart
+    while i < m:
+        dest[j] = src[i]
+        i = i + 1
+        j = j + 1
+
+
+def biCompare(x, y):
+    if x.isNeg != y.isNeg:
+        return 1 - 2 * int(x.isNeg)
+    i = len(x.digits) - 1
+    while i >= 0:
+        if x.digits[i] != y.digits[i]:
+            if x.isNeg:
+                return 1 - 2 * int(x.digits[i] > y.digits[i])
+            else:
+                return 1 - 2 * int(x.digits[i] < y.digits[i])
+        i = i - 1
+    return 0
+
+
+def biMultiply(x, y):
+    result = BigInt()
+    n = biHighIndex(x)
+    t = biHighIndex(y)
+    for i in range(0, t + 1):
+        c = 0
+        k = i
+        for j in range(0, n + 1):
+            uv = result.digits[k] + x.digits[j] * y.digits[i] + c
+            result.digits[k] = uv & maxDigitVal
+            c = urshift(uv, biRadixBits)
+            k = k + 1
+        result.digits[i + n + 1] = c
+    result.isNeg = x.isNeg != y.isNeg
+    return result
+
+
+def biMultiplyByRadixPower(x, n):
+    result = BigInt()
+    arrayCopy(x.digits, 0, result.digits, n, len(result.digits) - n)
+    return result
+
+
+def biDivideByRadixPower(x, n):
+    result = BigInt()
+    arrayCopy(x.digits, n, result.digits, 0, len(result.digits) - n)
+    return result
+
+
+def biModuloByRadixPower(x, n):
+    result = BigInt()
+    arrayCopy(x.digits, 0, result.digits, 0, n)
+    return result
+
+
+def biMultiplyDigit(x, y):
+    result = BigInt()
+    n = biHighIndex(x)
+    c = 0
+    for j in range(0, n + 1):
+        uv = result.digits[j] + x.digits[j] * y + c
+        result.digits[j] = uv & maxDigitVal
+        c = urshift(uv, biRadixBits)
+    result.digits[1 + n] = c
+    return result
+
+
+def biShiftLeft(x, n):
+    digitCount = math.floor(n / bitsPerDigit)
+    result = BigInt()
+    arrayCopy(x.digits, 0, result.digits, digitCount,
+              len(result.digits) - digitCount)
+    bits = n % bitsPerDigit
+    rightBits = bitsPerDigit - bits
+    i = len(result.digits) - 1
+    i1 = i - 1
+    while i > 0:
+        result.digits[i] = ((result.digits[i] << bits) & maxDigitVal) | urshift(
+            (result.digits[i1] & highBitMasks[bits]), (rightBits))
+        i = i - 1
+        i1 = i1 - 1
+    result.digits[0] = ((result.digits[i] << bits) & maxDigitVal)
+    result.isNeg = x.isNeg
+    return result
+
+
+def biShiftRight(x, n):
+    digitCount = math.floor(n / bitsPerDigit)
+    result = BigInt()
+    arrayCopy(x.digits, digitCount, result.digits, 0,
+              len(x.digits) - digitCount)
+    bits = n % bitsPerDigit
+    leftBits = bitsPerDigit - bits
+    i = 0
+    i1 = i + 1
+    while i < len(result.digits) - 1:
+        result.digits[i] = urshift(result.digits[i], bits) | (
+            (result.digits[i1] & lowBitMasks[bits]) << leftBits)
+        i = i + 1
+        i1 = i1 + 1
+
+    result.digits[len(result.digits) -
+                  1] = urshift(result.digits[len(result.digits) - 1], bits)
+    result.isNeg = x.isNeg
+    return result
+
+
+def biAdd(x, y):
+    if x.isNeg != y.isNeg:
+        y.isNeg = not y.isNeg
+        result = biSubtract(x, y)
+        y.isNeg = not y.isNeg
+    else:
+        result = BigInt()
+        c = 0
+        for i in range(0, len(x.digits)):
+            n = x.digits[i] + y.digits[i] + c
+            result.digits[i] = n % biRadix
+            c = int(n >= biRadix)
+        result.isNeg = x.isNeg
+    return result
+
+
+def biSubtract(x, y):
+    if x.isNeg != y.isNeg:
+        y.isNeg = not y.isNeg
+        result = biAdd(x, y)
+        y.isNeg = not y.isNeg
+    else:
+        result = BigInt()
+        c = 0
+        for i in range(0, len(x.digits)):
+            n = x.digits[i] - y.digits[i] + c
+            result.digits[i] = n % biRadix
+            if result.digits[i] < 0:
+                result.digits[i] = result.digits[i] + biRadix
+            c = 0 - int(n < 0)
+        if c == -1:
+            c = 0
+            for i in range(0, len(x.digits)):
+                n = 0 - result.digits[i] + c
+                result.digits[i] = n % biRadix
+                if result.digits[i] < 0:
+                    result.digits[i] = result.digits[i] + biRadix
+                c = 0 - int(n < 0)
+            result.isNeg = not x.isNeg
+        else:
+            result.isNeg = x.isNeg
+    return result
+
+
+class BigInt():
+
+    def __init__(self, flag=None):
+        if isinstance(flag, bool) and flag:
+            self.digits = None
+        else:
+            self.digits = ZERO_ARRAY.copy()
+        self.isNeg = False
+
+    def copy(self):
+        n = BigInt()
+        n.isNeg = self.isNeg
+        n.digits = self.digits.copy()
+        return n
+
+
+def genEncryData(text):
+    key1 = '0CoJUm6Qyw8W8jud'
+    key2 = genKey(16)
+
+    rsa_e = '010001'
+    rsa_m = '00e0b509f6259df8642dbc35662901477df22677ec152b5ff68ace615bb7b725152b3ab17a876aea8a5aa76d2e417629ec4ee341f56135fccf695280104e0312ecbda92557c93870114af6c9d05c4f7f0c3685b7a46bee255932575cce10b424d813cfe4875d3e82047b97ddef52741d546b8e289dc6935b3ece0462db0a22b8e7'
+    encText = aesEncrypt(text, key1)
+    encText = aesEncrypt(encText, key2)
+
+    rsaKey = RSAKeyPair(rsa_e, '', rsa_m)
+
+    encSecKey = encryptedString(rsaKey, key2)
+    return {
+        'encText': encText,
+        'encSecKey': encSecKey
+    }
+# END NETEASE RSA
+
+# START NETEASE SERVER RETURN ABROAD
+def ctu2x(da0x, bmw8o, bs9j):
+    dM0x = []
+    if da0x == None or len(da0x) == 0:
+        return dM0x
+    if len(da0x) < bs9j:
+        return None  # Error
+    for i in range(0, bs9j):
+        dM0x[i] = da0x[bmw8o + i]
+    return dM0x
+
+
+def cts2x(bs9j):
+    bv9m = []
+    for i in range(0, bs9j):
+        bv9m[i] = 0
+    return bv9m
+
+
+def ctm2x(sr4v):
+    bTG7z = []
+    if sr4v == None or len(sr4v) == 0:
+        return cts2x(baV5a)
+    if len(sr4v) >= baV5a:
+        return ctu2x(sr4v, 0, baV5a)
+    else:
+        for i in range(0, baV5a):
+            bTG7z.append(sr4v[i % len(sr4v)])
+        return bTG7z
+
+
+def ctk2x(bba5f):
+    if bba5f == None or (len(bba5f) % NZ1x != 0):
+        return None
+    bnj8b = []
+    bm9d = 0
+    cti2x = len(bba5f) / NZ1x
+    i = 0
+    while i < cti2x:
+        tmp = []
+        bnj8b.append(tmp)
+        for j in range(0, NZ1x):
+            tmp.append(bba5f[bm9d])
+            bm9d = bm9d + 1
+        i = i + 1
+    return bnj8b
+
+
+def cth2x(bTE7x):
+    pA3x = urshift(bTE7x, 4) & 15
+    py3x = bTE7x & 15
+    bm9d = pA3x * 16 + py3x
+    return ctr2x[bm9d]
+
+
+def bTD7w(bnr8j):
+    if bnr8j is None:
+        return None
+    bTz7s = []
+    bs9j = len(bnr8j)
+    i = 0
+    while i < bs9j:
+        bTz7s.append(cth2x(bnr8j[i]))
+        i = i + 1
+    return bTz7s
+
+
+def cuf2x(blF7y, Vl3x):
+    blF7y = De7X(blF7y)
+    Vl3x = De7X(Vl3x)
+    return De7X(blF7y ^ Vl3x)
+
+
+def bUi7b(Vj3x, blK7D):
+    if Vj3x == None or blK7D == None or len(Vj3x) != len(blK7D):
+        return Vj3x
+
+    rz4D = []
+    cud2x = len(Vj3x)
+    bs9j = cud2x
+    for i in range(0, bs9j):
+        rz4D.append(cuf2x(Vj3x[i], blK7D[i]))
+    return rz4D
+
+
+def cve3x(hx1x, bm9d):
+    return De7X(hx1x + bm9d)
+
+
+def cuJ2x(baB4F, bla7T):
+    if baB4F == None:
+        return None
+    if bla7T == None:
+        return baB4F
+    rz4D = []
+    cuz2x = len(bla7T)
+    bs9j = len(baB4F)
+    for i in range(0, bs9j):
+        rz4D.append(cve3x(baB4F[i], bla7T[i % cuz2x]))
+    return rz4D
+
+
+def cuy2x(baE4I):
+    if baE4I == None:
+        return baE4I
+    rz4D = []
+    cuk2x = len(baE4I)
+    bs9j = cuk2x
+    for i in range(0, bs9j):
+        rz4D.append(De7X(0 - baE4I[i]))
+    return rz4D
+
+
+def bmy8q(da0x, bmw8o, tG4K, ctt2x, bs9j):
+    if da0x == None or len(da0x) == 0:
+        return tG4K
+    if tG4K == None:
+        return None  # ERROR
+    if len(tG4K) == 0:
+        tG4K = [0] * (ctt2x - 1)
+    if len(da0x) < bs9j:
+        return None  # Error
+    for i in range(0, bs9j):
+        tG4K.append(da0x[bmw8o + i])
+        # tG4K[ctt2x + i] = da0x[bmw8o + i]
+    return tG4K
+
+
+def ctz2x(zf6Z):
+    X9O = 0
+    if len(zf6Z) > 0:
+        X9O = X9O + ((zf6Z[0] & 255) << 24)
+    if len(zf6Z) > 1:
+        X9O = X9O + ((zf6Z[1] & 255) << 16)
+    if len(zf6Z) > 2:
+        X9O = X9O + ((zf6Z[2] & 255) << 8)
+    if len(zf6Z) > 3:
+        X9O = X9O + (zf6Z[3] & 255)
+    return X9O
+
+
+def bTw7p(NU1x, sr4v):
+    if NU1x == None:
+        return None
+    if len(NU1x) == 0:
+        return []
+    if len(NU1x) % NZ1x != 0:
+        return None  # ERROR
+
+    sr4v = ctm2x(sr4v)
+    bnA8s = sr4v
+    bnD8v = ctk2x(NU1x)
+    UE3x = []
+    csL2x = len(bnD8v)
+    for i in range(0, csL2x):
+        bnG8y = bTD7w(bnD8v[i])
+        bnG8y = bTD7w(bnG8y)
+        bnH8z = bUi7b(bnG8y, bnA8s)
+        csG2x = cuJ2x(bnH8z, cuy2x(bnA8s))
+        bnH8z = bUi7b(csG2x, sr4v)
+        UE3x = bmy8q(bnH8z, 0, UE3x, i * NZ1x, NZ1x)
+        bnA8s = bnD8v[i]
+
+    bTt7m = []
+    bTt7m = bmy8q(UE3x, len(UE3x) - bTH7A, bTt7m, 0, bTH7A)
+    bs9j = ctz2x(bTt7m)
+    if bs9j > len(UE3x):
+        return None  # Err
+    rz4D = []
+    rz4D = bmy8q(UE3x, 0, rz4D, 0, bs9j)
+    return rz4D
+
+
+def bTM7F(cS0x):
+    UT3x = quote(cS0x)
+    UT3x = UT3x.replace('%2A', '*').replace('%28', '(')
+    xn5s = []
+    bTL7E = len(UT3x)
+    i = 0
+    while i < bTL7E:
+        if UT3x[i] == '%':
+            if i + 2 < bTL7E:
+                xn5s.append(bTN7G(UT3x[i + 1] + '' + UT3x[i + 2])[0])
+                i = i + 2
+            else:
+                return None
+        else:
+            xn5s.append(ord(UT3x[i]))
+        i = i + 1
+    return xn5s
+
+
+def De7X(hx1x):
+    if hx1x < -128:
+        return De7X(128 - (-128 - hx1x))
+    elif hx1x >= -128 and hx1x <= 127:
+        return hx1x
+    elif hx1x > 127:
+        return De7X(-129 + hx1x - 127)
+    return None
+
+
+def bTN7G(baJ50):
+    bmc7V = baJ50
+    bs9j = len(bmc7V) // 2
+    bm9d = 0
+    rz4D = []
+    for i in range(0, bs9j):
+        pA3x = int(bmc7V[bm9d], 16) << 4
+        bm9d = bm9d + 1
+        py3x = int(bmc7V[bm9d], 16)
+        bm9d = bm9d + 1
+        rz4D.append(De7X(pA3x + py3x))
+    return rz4D
+
+
+def csC2x(bbg5l, K8C):
+    if bbg5l == None:
+        return None
+    bTq7j = bbg5l
+    if len(bTq7j) == 0:
+        return []
+    NU1x = bTN7G(bTq7j)
+    if K8C is None:
+        return None  # Error
+    sr4v = bTM7F(K8C)
+    return bTw7p(NU1x, sr4v)
+
+
+def ctK2x(du0x):
+    Og1x = []
+    Og1x.append(bUc7V[urshift(du0x, 4) & 15])
+    Og1x.append(bUc7V[du0x & 15])
+    return ''.join(Og1x)
+
+
+def bTR7K(xn5s):
+    bs9j = len(xn5s)
+    if xn5s == None or bs9j < 0:
+        return ''
+    Og1x = []
+    for i in range(0, bs9j):
+        Og1x.append(ctK2x(xn5s[i]))
+    return ''.join(Og1x)
+
+
+def csz2x(bbg5l, K8C):
+    bnR8J = csC2x(bbg5l, K8C)
+    Ji8a = bTR7K(bnR8J)
+    AO6I = []
+    bog8Y = len(Ji8a) // 2
+    bm9d = 0
+    for i in range(0, bog8Y):
+        AO6I.append("%")
+        AO6I.append(Ji8a[bm9d])
+        bm9d = bm9d + 1
+        AO6I.append(Ji8a[bm9d])
+        bm9d = bm9d + 1
+    return "".join(AO6I)
+
+
+def initAbort():
+    global bUc7V, ctr2x, NZ1x, baV5a, bTH7A
+    bUc7V = ["0", "1", "2", "3", "4", "5", "6",
+             "7", "8", "9", "a", "b", "c", "d", "e", "f"]
+    ctr2x = [82, 9, 106, -43, 48, 54, -91, 56, -65, 64, -93, -98, -127, -13, -41, -5, 124, -29, 57, -126, -101, 47, -1, -121, 52, -114, 67, 68, -60, -34, -23, -53, 84, 123, -108, 50, -90, -62, 35, 61, -18, 76, -107, 11, 66, -6, -61, 78, 8, 46, -95, 102, 40, -39, 36, -78, 118, 91, -94, 73, 109, -117, -47, 37, 114, -8, -10, 100, -122, 104, -104, 22, -44, -92, 92, -52, 93, 101, -74, -110, 108, 112, 72, 80, -3, -19, -71, -38, 94, 21, 70, 87, -89, -115, -99, -124, -112, -40, -85, 0, -116, -68, -45, 10, -9, -28, 88, 5, -72, -77, 69, 6, -48, 44, 30, -113, -54, 63, 15, 2, -63, -81, -67, 3, 1, 19, -118,
+             107, 58, -111, 17, 65, 79, 103, -36, -22, -105, -14, -49, -50, -16, -76, -26, 115, -106, -84, 116, 34, -25, -83, 53, -123, -30, -7, 55, -24, 28, 117, -33, 110, 71, -15, 26, 113, 29, 41, -59, -119, 111, -73, 98, 14, -86, 24, -66, 27, -4, 86, 62, 75, -58, -46, 121, 32, -102, -37, -64, -2, 120, -51, 90, -12, 31, -35, -88, 51, -120, 7, -57, 49, -79, 18, 16, 89, 39, -128, -20, 95, 96, 81, 127, -87, 25, -75, 74, 13, 45, -27, 122, -97, -109, -55, -100, -17, -96, -32, 59, 77, -82, 42, -11, -80, -56, -21, -69, 60, -125, 83, -103, 97, 23, 43, 4, 126, -70, 119, -42, 38, -31, 105, 20, 99, 85, 33, 12, 125]
+    NZ1x = 64
+    baV5a = 64
+    bTH7A = 4
+# END NETEASE SERVER RETURN ABROAD
+
+
 class NeteaseLrcDownloader(LrcDownloader):
 
-    SEARCH_API = 'https://api.imjad.cn/cloudmusic/?type=search&search_type=1&s='
-    LYRIC_API = 'https://api.imjad.cn/cloudmusic/?type=lyric&id='
+    SEARCH_API = 'https://music.163.com/weapi/cloudsearch/get/web?csrf_token='
+    LYRIC_API = 'https://music.163.com/weapi/song/lyric?csrf_token='
 
+    def __init__(self):
+        initRsa()
+        initAbort()
 
     def search(self, title):
-        url = '{}{}'.format(self.SEARCH_API, quote(title, 'utf-8'))
-        logging.info(url)
-        r = requests.get(url)
-        logging.info(r.text)
+        data = {
+            'hlpretag': '<span class="s-fc7">',
+            'hlposttag': '</span>',
+            's': title,
+            'type': '1',
+            'offset': 0,
+            'total': True,
+            'limit': 30,
+            'csrf_token': ''
+        }
+        postData = genEncryData(json.dumps(data))
+        params = {
+            'params': postData['encText'],
+            'encSecKey': postData['encSecKey']
+        }
+        logging.info(self.SEARCH_API)
+        r = requests.post(self.SEARCH_API, params=params)
+        if len(r.text) == 0:
+            return []
         ret = r.json()
-        if ret['code'] == 200:
-            if 'result' in ret.keys() and 'songs' in ret['result'].keys():
-                songs = ret['result']['songs']
-                for song in songs:
-                    song['title'] = song['name']
-                    song['duration'] = song['dt']
-                return songs
+        if 'abroad' in ret.keys():
+            s = ret['result']
+            K8C = 'fuck~#$%^&*(458'
+            tmp = csz2x(s, K8C)
+            result = json.loads(unquote(tmp))
+        else:
+            result = ret['result']
+        logging.info(result)
+        if 'songs' in result.keys():
+            songs = result['songs']
+            for song in songs:
+                song['title'] = song['name']
+                song['duration'] = song['dt']
+                if 'artist' not in song.keys() and 'ar' in song.keys() and len(song['ar']) > 0:
+                    song['artist'] = song['ar'][0]['name']
+                else:
+                    song['artist'] = 'Unknow artist'
+                if 'album' not in song.keys() and 'al' in song.keys():
+                    song['album'] = song['al']['name']
+                else:
+                    song['album'] = 'Unknow album'
+            return songs
         return []
 
     def getLyric(self, song):
-        songId = song['id']
-        url = '{}{}'.format(self.LYRIC_API, songId)
-        r = requests.get(url)
-        logging.info(r.text)
+        data = {
+            'id': song['id'],
+            'lv': -1,
+            'tv': -1,
+            'csrf_token': ''
+        }
+        postData = genEncryData(json.dumps(data))
+        params = {
+            'params': postData['encText'],
+            'encSecKey': postData['encSecKey']
+        }
+        r = requests.post(self.LYRIC_API, params=params)
         ret = r.json()
+        logging.info(r.text)
         if ret['code'] == 200 and 'lrc' in ret.keys() and ret['lrc']['lyric'] is not None:
             return ret['lrc']['lyric']
         return ''
@@ -407,7 +1300,7 @@ class LrcPlayer(object):
         self.cmusInfoGetter = CmusInfo()
 
         self.downloader = {
-            #'netease': NeteaseLrcDownloader(),
+            'netease': NeteaseLrcDownloader(),
             'xiami': XiamiLrcDownloader()
         }
 
@@ -450,7 +1343,8 @@ class LrcPlayer(object):
         self.threads['uiRefresher'] = uiRefresher
 
         newLoop = asyncio.new_event_loop()
-        looper = threading.Thread(target= self.asyncioThreadLoop, args=(newLoop,))
+        looper = threading.Thread(
+            target=self.asyncioThreadLoop, args=(newLoop,))
         looper.setDaemon(True)
         self.threads['looper'] = looper
         self.newLoop = newLoop
@@ -474,15 +1368,16 @@ class LrcPlayer(object):
         curses.init_pair(curses.COLOR_CYAN, curses.COLOR_CYAN, -1)
         curses.init_pair(curses.COLOR_YELLOW, curses.COLOR_YELLOW, -1)
         curses.init_pair(curses.COLOR_RED, curses.COLOR_RED, -1)
-        curses.init_pair(curses.COLOR_BLUE, curses.COLOR_WHITE, curses.COLOR_BLUE)
+        curses.init_pair(curses.COLOR_BLUE,
+                         curses.COLOR_WHITE, curses.COLOR_BLUE)
 
         self.getMaxyx()
         # set cursor invisible
         curses.curs_set(0)
-        #curses.curs_set(1)
+        # curses.curs_set(1)
         curses.noecho()
         curses.raw()
-        #curses.cbreak()
+        # curses.cbreak()
         stdscr.keypad(True)
         win = curses.newpad(self.win['height'], 16383)
         win.keypad(True)
@@ -490,7 +1385,7 @@ class LrcPlayer(object):
         self.win['win'] = win
         self.win['insMode'] = False
 
-        win.move(self.win['height']-1, 0)
+        win.move(self.win['height'] - 1, 0)
 
     def uiRefresh(self):
         while True:
@@ -514,7 +1409,8 @@ class LrcPlayer(object):
                         if self.downFuture is not None and not self.downFuture.done():
                             pass
                         else:
-                            future = asyncio.run_coroutine_threadsafe(self.getLyrics(), self.newLoop)
+                            future = asyncio.run_coroutine_threadsafe(
+                                self.getLyrics(), self.newLoop)
                             self.downFuture = future
 
             curline = -1
@@ -525,7 +1421,7 @@ class LrcPlayer(object):
             yx = self.win['win'].getyx()
             #inputStr = self.win['win'].instr(self.win['height']-1, 0)
             if self.curUI == self.LRC_UI:
-                if  curline == -1:
+                if curline == -1:
                     self.showinfo()
                 else:
                     self.showlrc()
@@ -533,7 +1429,8 @@ class LrcPlayer(object):
                 self.showSearch()
             #self.win['win'].addstr(self.win['height']-1, 0, inputStr)
             self.win['win'].move(yx[0], yx[1])
-            self.win['win'].refresh(0, 0, 0, 0, self.win['height']-1, self.win['width']-1)
+            self.win['win'].refresh(0, 0, 0, 0, self.win[
+                                    'height'] - 1, self.win['width'] - 1)
 
             while self.downFuture is not None and not self.downFuture.done():
                 time.sleep(self.UI_REFRESH_SEC)
@@ -581,7 +1478,6 @@ class LrcPlayer(object):
         self.search['searchFuture'] = None
         return searchRet
 
-
     @asyncio.coroutine
     def getLyrics(self):
         ret = None
@@ -594,7 +1490,7 @@ class LrcPlayer(object):
                 if matchData['song'] is None:
                     continue
                 lyric = downloader.getLyric(matchData['song'])
-                if lyric is not None and len(lyric) != 0 and (bestMatchData is None or matchData['value']>bestMatchData['value']):
+                if lyric is not None and len(lyric) != 0 and (bestMatchData is None or matchData['value'] > bestMatchData['value']):
                     bestMatchData = matchData
                     bestMatchData['type'] = dlType
                     bestMatchData['lyric'] = lyric
@@ -608,7 +1504,7 @@ class LrcPlayer(object):
         return ret
 
     def cutStr(self, inputStr, width):
-        if inputStr is None or len(inputStr)==0:
+        if inputStr is None or len(inputStr) == 0:
             return None, None
         if width == 0:
             return None, inputStr
@@ -630,7 +1526,7 @@ class LrcPlayer(object):
             addStr = ''
         space = width - wcwidth.wcswidth(addStr)
         if align == self.ALIGN_CENTER:
-            spaceLeft = space//2
+            spaceLeft = space // 2
             spaceRight = space - spaceLeft
         elif align == self.ALIGN_LEFT:
             spaceLeft = 0
@@ -638,7 +1534,7 @@ class LrcPlayer(object):
         elif align == self.ALIGN_RIGHT:
             spaceRight = 0
             spaceLeft = space - spaceRight
-        addStr = ' '*spaceLeft + addStr + ' '*spaceRight
+        addStr = ' ' * spaceLeft + addStr + ' ' * spaceRight
         win.addstr(y, 0, addStr, attr)
 
     def addLines(self, win, lines, startY, height, width, align=1):
@@ -646,7 +1542,7 @@ class LrcPlayer(object):
         for i in range(0, startY):
             self.addLine(win, '', i, width, 0)
 
-        while startY < height and len(insLines)>0:
+        while startY < height and len(insLines) > 0:
             ins = insLines.pop(0)
             insText, tmp = self.cutStr(ins['text'], width)
             if tmp is not None:
@@ -664,7 +1560,8 @@ class LrcPlayer(object):
         height = self.win['height'] - 1
         width = self.win['width']
 
-        lines = [{'text': lyrics[curline][1], 'attr': curses.color_pair(curses.COLOR_CYAN) | curses.A_BOLD}]
+        lines = [{'text': lyrics[curline][1], 'attr': curses.color_pair(
+            curses.COLOR_CYAN) | curses.A_BOLD}]
         curPos = height // 2
 
         i = 1
@@ -696,10 +1593,13 @@ class LrcPlayer(object):
             if self.search['ret'] is None:
                 searchInfo = [
                     {'text': 'Searching...', 'attr': 0},
-                    {'text': 'keyword: {}'.format(self.search['keyword']), 'attr': 0}
+                    {'text': 'keyword: {}'.format(
+                        self.search['keyword']), 'attr': 0}
                 ]
-                self.addLines(self.win['win'], searchInfo, height//2, height-1, width)
-                future = asyncio.run_coroutine_threadsafe(self.searchLyrics(), self.newLoop)
+                self.addLines(self.win['win'], searchInfo,
+                              height // 2, height - 1, width)
+                future = asyncio.run_coroutine_threadsafe(
+                    self.searchLyrics(), self.newLoop)
                 self.search['searchFuture'] = future
             else:
                 if self.search['downloadFuture'] is None:
@@ -709,11 +1609,12 @@ class LrcPlayer(object):
                     downloadInfo = [
                         {'text': 'Downloading...', 'attr': 0},
                         {'text': 'Title: {}'.format(song['title']), 'attr': 0},
-                        {'text': 'Artist: {}'.format(song['artist']), 'attr': 0},
+                        {'text': 'Artist: {}'.format(
+                            song['artist']), 'attr': 0},
                         {'text': 'Album: {}'.format(song['album']), 'attr': 0}
                     ]
-                    self.addLines(self.win['win'], downloadInfo, height//2, height-1, width)
-
+                    self.addLines(
+                        self.win['win'], downloadInfo, height // 2, height - 1, width)
 
     def showSearchResult(self):
         showList = self.search['ret']
@@ -724,18 +1625,19 @@ class LrcPlayer(object):
         height = self.win['height'] - 1
         width = self.win['width']
         top = self.search['top']
-        showList = showList[top:top+height]
+        showList = showList[top:top + height]
         i = 0
         for item in showList:
-            text = '{} {} album:{} from:{}'.format(item['song']['title'], item['song']['artist'], item['song']['album'], item['type'])
+            text = '{} {} album:{} from:{}'.format(item['song']['title'], item['song'][
+                                                   'artist'], item['song']['album'], item['type'])
             attr = 0
-            if i == cur:
+            if i == cur-top:
                 attr = curses.color_pair(curses.COLOR_BLUE)
             lines.append({'text': text, 'attr': attr})
             i = i + 1
         logging.info('{}'.format(lines))
-        self.addLines(self.win['win'], lines, 0, height, width, self.ALIGN_LEFT)
-
+        self.addLines(self.win['win'], lines, 0,
+                      height, width, self.ALIGN_LEFT)
 
     def showinfo(self):
         title = self.cmusInfo['title']
@@ -752,13 +1654,14 @@ class LrcPlayer(object):
 
         height = self.win['height']
         width = self.win['width']
-        self.addLines(self.win['win'], lines, height//2, height-1, width)
+        self.addLines(self.win['win'], lines, height // 2, height - 1, width)
 
     def showPrompt(self, prompt, attr=None):
         if attr is None:
-            attr =  (curses.color_pair(curses.COLOR_YELLOW) | curses.A_BOLD)
-        self.addLine(self.win['win'], prompt, self.win['height']-1, self.win['width']-1, attr, 0)
-        self.win['win'].move(self.win['height']-1, 0)
+            attr = (curses.color_pair(curses.COLOR_YELLOW) | curses.A_BOLD)
+        self.addLine(self.win['win'], prompt, self.win[
+                     'height'] - 1, self.win['width'] - 1, attr, 0)
+        self.win['win'].move(self.win['height'] - 1, 0)
 
     def compareSong(self, song, anoSong):
         if song is None or anoSong is None:
@@ -788,11 +1691,12 @@ class LrcPlayer(object):
         shiftMs = float(n) * m
         return shiftMs
 
-
     def handleCommand(self, commandLine):
-        commands = re.findall('^(q|quit|exit|save|qa|reload|wrong|search|shift)(\s+.*)?', commandLine, re.IGNORECASE)
+        commands = re.findall(
+            '^(q|quit|exit|save|qa|reload|wrong|search|shift)(\s+.*)?', commandLine, re.IGNORECASE)
         if len(commands) == 0:
-            self.showPrompt(self.PROMPT['INVALID_COMMAND'], (curses.color_pair(curses.COLOR_RED) | curses.A_BOLD))
+            self.showPrompt(self.PROMPT['INVALID_COMMAND'], (curses.color_pair(
+                curses.COLOR_RED) | curses.A_BOLD))
             return
 
         command = commands[0][0].lower()
@@ -803,7 +1707,8 @@ class LrcPlayer(object):
             if saveRet is None:
                 self.showPrompt(self.PROMPT['SAVE_NOTHING'])
             elif not saveRet:
-                self.showPrompt(self.PROMPT['SAVE_ERROR'], (curses.color_pair(curses.COLOR_RED) | curses.A_BOLD))
+                self.showPrompt(self.PROMPT['SAVE_ERROR'], (curses.color_pair(
+                    curses.COLOR_RED) | curses.A_BOLD))
 
         if command in ('q', 'quit', 'exit', 'qa'):
             curses.endwin()
@@ -821,44 +1726,44 @@ class LrcPlayer(object):
                 if shiftTime is not None:
                     self.lrc.setShift(shiftTime)
             except ValueError:
-                self.showPrompt(self.PROMPT['INVALID_PARAM'], (curses.color_pair(curses.COLOR_RED) | curses.A_BOLD))
+                self.showPrompt(self.PROMPT['INVALID_PARAM'], (curses.color_pair(
+                    curses.COLOR_RED) | curses.A_BOLD))
 
         if command in ('search', ):
             if self.cmusInfo == None:
                 self.showPrompt(self.PROMPT['NO_CMUS_DATA'])
                 return
             self.curUI = self.SEARCH_UI
-            if len(param) == 0 :
+            if len(param) == 0:
                 param = '${title}'
             keyword = Template(param)
             keyword = keyword.safe_substitute(self.cmusInfo)
             self.search['keyword'] = keyword
 
-
     def parseInput(self, ch):
         if ch == ':':
             self.inputLen = 0
             self.win['win'].deleteln()
-            self.win['win'].move(self.win['height']-1, 0)
+            self.win['win'].move(self.win['height'] - 1, 0)
             self.win['insMode'] = True
             curses.curs_set(1)
 
         if ch == '\n' and self.win['insMode']:
-            inputStr = self.win['win'].instr(self.win['height']-1, 1)
+            inputStr = self.win['win'].instr(self.win['height'] - 1, 1)
             inputStr = inputStr.decode('utf-8')
             inputStr = inputStr.strip()
             self.win['win'].deleteln()
             curses.curs_set(0)
             self.win['insMode'] = False
-            self.win['win'].move(self.win['height']-1, 0)
+            self.win['win'].move(self.win['height'] - 1, 0)
             self.handleCommand(inputStr)
             self.inputLen = 0
 
-        if  ch == chr(3):
+        if ch == chr(3):
             self.win['win'].deleteln()
             curses.curs_set(0)
             self.win['insMode'] = False
-            self.win['win'].move(self.win['height']-1, 0)
+            self.win['win'].move(self.win['height'] - 1, 0)
             self.showPrompt(self.PROMPT['EXIT'])
             self.inputLen = 0
 
@@ -887,17 +1792,24 @@ class LrcPlayer(object):
                 if cur < 0:
                     cur = 0
                 if cur >= retSize:
-                    cur = retSize
+                    cur = retSize-1
+                if cur < top:
+                    top = cur
+                if cur >= top+height:
+                    top = top + 1
                 self.search['cur'] = cur
+                self.search['top'] = top
 
             if ch == '\n' and self.search['ret'] is not None:
                 self.search['selSong'] = self.search['ret'][self.search['cur']]
-                future = asyncio.run_coroutine_threadsafe(self.downloadSearchLyrics(), self.newLoop)
+                future = asyncio.run_coroutine_threadsafe(
+                    self.downloadSearchLyrics(), self.newLoop)
                 self.search['downloadFuture'] = future
 
             self.showSearchResult()
             self.win['win'].move(yx[0], yx[1])
-            self.win['win'].refresh(0, 0, 0, 0, self.win['height']-1, self.win['width']-1)
+            self.win['win'].refresh(0, 0, 0, 0, self.win[
+                                    'height'] - 1, self.win['width'] - 1)
 
         if self.win['insMode']:
             nowyx = self.win['win'].getyx()
@@ -906,15 +1818,15 @@ class LrcPlayer(object):
                     self.win['win'].deleteln()
                     curses.curs_set(0)
                     self.win['insMode'] = False
-                    self.win['win'].move(self.win['height']-1, 0)
+                    self.win['win'].move(self.win['height'] - 1, 0)
                     self.inputLen = 0
                 else:
-                    inputStr = self.win['win'].instr(self.win['height']-1, 0)
+                    inputStr = self.win['win'].instr(self.win['height'] - 1, 0)
                     inputStr = inputStr.decode('utf8')
                     insX = nowyx[1]
-                    retStr = inputStr[:insX-1] + inputStr[insX:]
+                    retStr = inputStr[:insX - 1] + inputStr[insX:]
                     self.win['win'].addstr(nowyx[0], 0, retStr)
-                    self.win['win'].move(nowyx[0], insX-1)
+                    self.win['win'].move(nowyx[0], insX - 1)
                     self.inputLen = self.inputLen - 1
 
             elif ch in (curses.KEY_LEFT, curses.KEY_RIGHT):
@@ -925,26 +1837,28 @@ class LrcPlayer(object):
                     x = x + 1
                     if x >= self.inputLen:
                         x = self.inputLen
-                self.win['win'].move(self.win['height']-1, x)
+                self.win['win'].move(self.win['height'] - 1, x)
             elif ch in (
                 curses.KEY_UP, curses.KEY_DOWN,
-                chr(4), chr(0), chr(49), chr(26), chr(24), chr(22), chr(2), chr(14), chr(44), chr(46), chr(31), chr(1), chr(19), chr(6), chr(7), chr(11), chr(12), chr(59), chr(39), chr(17), chr(23), chr(5), chr(18), chr(20), chr(25), chr(21), chr(9), chr(16), chr(15), chr(17), chr(27), chr(28), chr(29), chr(30), chr(57), chr(48), chr(61), chr(96)
-                ):
+                chr(4), chr(0), chr(49), chr(26), chr(24), chr(22), chr(2), chr(14), chr(44), chr(46), chr(31), chr(1), chr(19), chr(6), chr(7), chr(11), chr(12), chr(59), chr(39), chr(
+                    17), chr(23), chr(5), chr(18), chr(20), chr(25), chr(21), chr(9), chr(16), chr(15), chr(17), chr(27), chr(28), chr(29), chr(30), chr(57), chr(48), chr(61), chr(96)
+            ):
                 pass
             else:
                 if nowyx[1] == self.inputLen:
                     self.win['win'].addch(ch)
                 else:
-                    inputStr = self.win['win'].instr(self.win['height']-1, 0)
+                    inputStr = self.win['win'].instr(self.win['height'] - 1, 0)
                     inputStr = inputStr.decode('utf8')
                     insX = nowyx[1]
                     retStr = inputStr[:insX] + ch + inputStr[insX:]
                     self.win['win'].addstr(nowyx[0], 0, retStr)
-                    self.win['win'].move(nowyx[0], insX+1)
+                    self.win['win'].move(nowyx[0], insX + 1)
                 self.inputLen = self.inputLen + 1
 
         self.getMaxyx()
-        self.win['win'].refresh(0, 0, 0, 0, self.win['height']-1, self.win['width']-1)
+        self.win['win'].refresh(0, 0, 0, 0, self.win[
+                                'height'] - 1, self.win['width'] - 1)
 
 
 if __name__ == '__main__':
