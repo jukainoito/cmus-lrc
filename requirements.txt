@@ -1,2 +1,4 @@
+wcwidth
 requests
 lxml
+pycrypto

@@ -32,6 +32,7 @@ import math
 import hashlib
 
 import curses
+import _curses
 import wcwidth
 
 
@@ -1330,15 +1331,18 @@ class LrcPlayer(object):
         self.initThreads()
 
         while True:
-            ch = self.win['win'].get_wch()
-            self.parseInput(ch)
+            try:
+                ch = self.win['win'].get_wch()
+                self.parseInput(ch)
+            except _curses.error:
+                self.win['insMode'] = False
 
     def asyncioThreadLoop(self, loop):
         asyncio.set_event_loop(loop)
         loop.run_forever()
 
     def initThreads(self):
-        uiRefresher = threading.Thread(target=self.uiRefresh)
+        uiRefresher = threading.Thread(target=self.uiRefreshLoop)
         uiRefresher.setDaemon(True)
         self.threads['uiRefresher'] = uiRefresher
 
@@ -1388,56 +1392,64 @@ class LrcPlayer(object):
         win.move(self.win['height'] - 1, 0)
 
     def uiRefresh(self):
-        while True:
-            preWidth = self.win['width']
-            self.getMaxyx()
-            if preWidth != self.win['width']:
-                self.win['win'].resize(self.win['width'], 16383)
+        preWidth = self.win['width']
+        self.getMaxyx()
+        if preWidth != self.win['width']:
+            self.win['win'].resize(self.win['width'], 16383)
 
-            self.cmusInfo = self.cmusInfoGetter.getInfo()
+        self.cmusInfo = self.cmusInfoGetter.getInfo()
 
-            needLoad = False
-            if self.lrc is None and self.cmusInfo is not None:
-                needLoad = True
-            elif self.lrc is not None and self.cmusInfo is not None:
-                needLoad = not self.compareSong(self.cmusInfo, self.lrc.song)
+        needLoad = False
+        if self.lrc is None and self.cmusInfo is not None:
+            needLoad = True
+        elif self.lrc is not None and self.cmusInfo is not None:
+            needLoad = not self.compareSong(self.cmusInfo, self.lrc.song)
 
-            if needLoad:
-                self.lrc = Lyric(self.cmusInfo)
-                if self.lrc.lyrics is None:
-                    if not self.lrc.isWrong and not DISABLE_DOWNLOAD and not self.lrc.nomatch:
-                        if self.downFuture is not None and not self.downFuture.done():
-                            pass
-                        else:
-                            future = asyncio.run_coroutine_threadsafe(
-                                self.getLyrics(), self.newLoop)
-                            self.downFuture = future
+        if needLoad:
+            self.lrc = Lyric(self.cmusInfo)
+            if self.lrc.lyrics is None:
+                if not self.lrc.isWrong and not DISABLE_DOWNLOAD and not self.lrc.nomatch:
+                    if self.downFuture is not None and not self.downFuture.done():
+                        pass
+                    else:
+                        future = asyncio.run_coroutine_threadsafe(
+                            self.getLyrics(), self.newLoop)
+                        self.downFuture = future
 
-            curline = -1
-            preCurline = self.lrc.curline
-            if self.lrc is not None and self.lrc.lyrics is not None:
-                curline = self.lrc.queryCurLine(self.cmusInfo['position'])
+        curline = -1
+        preCurline = self.lrc.curline
+        if self.lrc is not None and self.lrc.lyrics is not None:
+            curline = self.lrc.queryCurLine(self.cmusInfo['position'])
 
-            yx = self.win['win'].getyx()
-            #inputStr = self.win['win'].instr(self.win['height']-1, 0)
-            if self.curUI == self.LRC_UI:
-                if curline == -1:
-                    self.showinfo()
-                else:
-                    self.showlrc()
-            elif self.curUI == self.SEARCH_UI:
-                self.showSearch()
-            #self.win['win'].addstr(self.win['height']-1, 0, inputStr)
-            self.win['win'].move(yx[0], yx[1])
-            self.win['win'].refresh(0, 0, 0, 0, self.win[
+        yx = self.win['win'].getyx()
+        #inputStr = self.win['win'].instr(self.win['height']-1, 0)
+        if self.curUI == self.LRC_UI:
+            if curline == -1:
+                self.showinfo()
+            else:
+                self.showlrc()
+        elif self.curUI == self.SEARCH_UI:
+            self.showSearch()
+        if not self.win['insMode']:
+            self.win['win'].move(self.win['height']-1, 0)
+            self.win['win'].deleteln()
+        #self.win['win'].addstr(self.win['height']-1, 0, inputStr)
+        self.win['win'].move(yx[0], yx[1])
+        self.win['win'].refresh(0, 0, 0, 0, self.win[
                                     'height'] - 1, self.win['width'] - 1)
 
-            while self.downFuture is not None and not self.downFuture.done():
-                time.sleep(self.UI_REFRESH_SEC)
-            if self.downFuture is not None:
-                self.downFuture = None
-            else:
-                time.sleep(self.UI_REFRESH_SEC)
+    def uiRefreshLoop(self):
+        while True:
+            try:
+                self.uiRefresh()
+                while self.downFuture is not None and not self.downFuture.done():
+                    time.sleep(self.UI_REFRESH_SEC)
+                if self.downFuture is not None:
+                    self.downFuture = None
+                else:
+                    time.sleep(self.UI_REFRESH_SEC)
+            except _curses.error:
+                pass
 
     @asyncio.coroutine
     def downloadSearchLyrics(self):
@@ -1537,16 +1549,19 @@ class LrcPlayer(object):
         addStr = ' ' * spaceLeft + addStr + ' ' * spaceRight
         win.addstr(y, 0, addStr, attr)
 
-    def addLines(self, win, lines, startY, height, width, align=1):
+    def addLines(self, win, lines, startY, height, width, align=1, cut=True):
         insLines = lines.copy()
         for i in range(0, startY):
             self.addLine(win, '', i, width, 0)
 
         while startY < height and len(insLines) > 0:
             ins = insLines.pop(0)
-            insText, tmp = self.cutStr(ins['text'], width)
-            if tmp is not None:
-                insLines.insert(0, {'text': tmp, 'attr': ins['attr']})
+            if cut:
+                insText, tmp = self.cutStr(ins['text'], width)
+                if tmp is not None:
+                    insLines.insert(0, {'text': tmp, 'attr': ins['attr']})
+            else:
+                insText = ins['text']
             self.addLine(win, insText, startY, width, ins['attr'], align)
             startY = startY + 1
 
@@ -1628,16 +1643,17 @@ class LrcPlayer(object):
         showList = showList[top:top + height]
         i = 0
         for item in showList:
-            text = '{} {} album:{} from:{}'.format(item['song']['title'], item['song'][
-                                                   'artist'], item['song']['album'], item['type'])
+            text = '{} {} {}'.format(item['song']['title'], item['song']['artist'], item['type'])
+            # text = '{} {} album:{} from:{}'.format(item['song']['title'], item['song'][
+                                                   # 'artist'], item['song']['album'], item['type'])
             attr = 0
             if i == cur-top:
                 attr = curses.color_pair(curses.COLOR_BLUE)
             lines.append({'text': text, 'attr': attr})
             i = i + 1
-        logging.info('{}'.format(lines))
+        #logging.info('{}'.format(lines))
         self.addLines(self.win['win'], lines, 0,
-                      height, width, self.ALIGN_LEFT)
+                      height, width, self.ALIGN_LEFT, False)
 
     def showinfo(self):
         title = self.cmusInfo['title']
@@ -1743,6 +1759,7 @@ class LrcPlayer(object):
     def parseInput(self, ch):
         if ch == ':':
             self.inputLen = 0
+            self.win['win'].move(self.win['height'] - 1, 0)
             self.win['win'].deleteln()
             self.win['win'].move(self.win['height'] - 1, 0)
             self.win['insMode'] = True
@@ -1770,7 +1787,7 @@ class LrcPlayer(object):
         if not self.win['insMode'] and self.curUI == self.SEARCH_UI:
             yx = self.win['win'].getyx()
             self.getMaxyx()
-            if ch in (curses.KEY_EXIT, ):
+            if ch in (curses.KEY_EXIT, chr(27)):
                 self.search = {
                     'keyword': None,
                     'searchFuture': None,
@@ -1855,7 +1872,6 @@ class LrcPlayer(object):
                     self.win['win'].addstr(nowyx[0], 0, retStr)
                     self.win['win'].move(nowyx[0], insX + 1)
                 self.inputLen = self.inputLen + 1
-
         self.getMaxyx()
         self.win['win'].refresh(0, 0, 0, 0, self.win[
                                 'height'] - 1, self.win['width'] - 1)
